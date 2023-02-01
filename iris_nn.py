@@ -4,15 +4,20 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torch.utils.data as data
 from sklearn import datasets
+import wandb
 
+wandb.init(project='meta_nca')
 # Load the Iris dataset
+
+#device = 'cuda:0'
+device = 'cpu' # gpu is slower...not sure why
 iris = datasets.load_iris()
 X = iris["data"]
 y = iris["target"]
 
 # Convert to PyTorch tensors and create a dataset
-X = torch.Tensor(X)
-y = torch.Tensor(y).long()
+X = torch.Tensor(X).to(device)
+y = torch.Tensor(y).long().to(device)
 dataset = data.TensorDataset(X, y)
 
 # Split the dataset into training and validation sets
@@ -72,126 +77,87 @@ class NCA_NN(nn.Module):
 
 
 class MyLinear(nn.Module):
-    def __init__(self, in_units, out_units, perc=0.5):
+    def __init__(self, in_units, out_units, prop_cells_updated=1.0, device=None):
         super().__init__()
-        self.weight = nn.Parameter(torch.zeros(in_units, out_units), requires_grad=False)
-        self.bias = nn.Parameter(torch.zeros(out_units,), requires_grad=False)
+        self.device = device
         self.in_units = in_units
         self.out_units = out_units
-        self.perc = perc
+        self.reset_weight()
+        self.prop_cells_updated = prop_cells_updated
 
         #self.local_nn = nn.Linear(in_units+out_units, 1)
-        hidden_size = 100
+        hidden_size = 10
         self.local_nn = nn.Sequential(
             nn.Linear(in_units+out_units, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, 1)
-        )
+        ).to(device)
 
     def reset_weight(self):
         #import ipdb; ipdb.set_trace()
-        self.weight = nn.Parameter(torch.zeros(self.in_units, self.out_units), requires_grad=False)
-        self.bias = nn.Parameter(torch.zeros(self.out_units,), requires_grad=False)
+        self.weight = nn.Parameter(torch.zeros(self.in_units, self.out_units), requires_grad=False).to(self.device)
+        #self.bias = nn.Parameter(torch.zeros(self.out_units,), requires_grad=False)
 
     def nca_local_rule(self, idx_in_units, idx_out_units):
         for i in idx_in_units:
             for j in idx_out_units:
-                self.weight[i, j] = torch.sigmoid(self.local_nn(torch.cat([self.weight[i, :].flatten(), self.weight[:,j].flatten()]))) - 0.5
+                self.weight[i, j] += self.local_nn(torch.cat([self.weight[i, :].flatten(), self.weight[:, j].flatten()]))
+        #self.weight.data = F.normalize(self.weight)
 
     def forward(self, X):
-        idx_in_units = torch.randint(0, self.in_units, (int(self.perc*self.in_units), 1))
-        idx_out_units = torch.randint(0, self.out_units, (int(self.perc*self.out_units), 1))
+        #idx_in_units = torch.randint(0, self.in_units, (int(self.prop_cells_updated*self.in_units), 1))
+        #idx_out_units = torch.randint(0, self.out_units, (int(self.prop_cells_updated*self.out_units), 1))
+        # Random sample without replacement
+        idx_in_units = torch.randperm(self.in_units)[:int(self.in_units*self.prop_cells_updated)][:,None]
+        idx_out_units = torch.randperm(self.out_units)[:int(self.out_units*self.prop_cells_updated)][:,None]
         self.nca_local_rule(idx_in_units, idx_out_units)
-        linear = torch.matmul(X, self.weight) + self.bias
+        #linear = torch.matmul(X, self.weight) + self.bias
+        linear = torch.matmul(X, self.weight) # no bias for now
         return F.softmax(linear, dim=-1)
 
 
 # Initialize the network
 #net = Net()
-net = MyLinear(X.shape[1], y.max() + 1)
-
+net = MyLinear(X.shape[1], y.max() + 1, device=device)
+net = net.to(device)
 # Define the loss function and optimizer
 criterion = nn.CrossEntropyLoss()
 #optimizer = optim.SGD(net.local_nn.parameters(), lr=0.01, momentum=0.9)
 optimizer = optim.SGD(net.local_nn.parameters(), lr=0.001)
-#torch.autograd.set_detect_anomaly(True)
 
 # Train the network
-'''
-prev_local_nn = torch.zeros_like(net.local_nn.weight)
-for metaepoch in range(100):
-    net.reset_weight()
-    # Zero the gradients
-    loss = 0
-    for epoch in range(1000):
-
-        # Forward pass
-        #import ipdb; ipdb.set_trace()
-        outputs = net(train_dataset.dataset.tensors[0])
-        #outputs.requires_grad = True
-        loss += criterion(outputs, train_dataset.dataset.tensors[1])
-
-    # Print the training loss
-    print(f"Epoch {epoch}: Loss {loss.item()}")
-    #print(net.weight)
-    #if torch.any(diff != 0):
-    #   import ipdb; ipdb.set_trace()
-    #import ipdb; ipdb.set_trace()
-    #loss.backward(retain_graph=True)
-    # Backward pass and optimization
-    #loss.backward()
-    loss.backward()
-    optimizer.step()
-    diff = prev_local_nn - net.local_nn.weight
-    print(diff)
-    prev_local_nn = net.local_nn.weight
-'''
 
 #prev_local_nn = torch.zeros_like(net.local_nn.weight)
 # TODO: why can I not make gradient updates every epoch? Can't do it more than twice
-for metaepoch in range(1000):
+
+#torch.autograd.set_detect_anomaly(True)
+for metaepoch in range(10000):
     net.reset_weight()
     loss = 0
+    optimizer.zero_grad()
     for epoch in range(10):
-        # Zero the gradients
-
-        # Forward pass
-        #import ipdb; ipdb.set_trace()
+        # Each forward call is a "step" of the simulation
         outputs = net(train_dataset.dataset.tensors[0])
-        #outputs.requires_grad = True
-        loss += criterion(outputs, train_dataset.dataset.tensors[1])
-        '''
-        loss.backward()
-        optimizer.step()
-        outputs.detach()
-        net.weight.detach()
-        net.bias.detach()
-        net.local_nn.weight.detach()
-        '''
 
-        # Backward pass and optimization
+    loss = criterion(outputs, train_dataset.dataset.tensors[1])
+    loss.backward()
+    _, predicted = torch.max(outputs, 1)
+    accuracy = (predicted == train_dataset.dataset.tensors[1]).float().mean()
+    wandb.log({'loss': loss.item(), 'accuracy': accuracy})
 
-        # Print the training loss
-    print(f"MetaEpoch {metaepoch}: Loss {loss.item()}")
-    #print(net.weight)
+    layers = list(net.local_nn.modules())[1:]
+    with torch.no_grad():
+        for layer in layers:
+            if 'weight' in dir(layer):
+                layer.weight.grad = layer.weight.grad/(layer.weight.grad.norm() + 1e-8)
+                layer.bias.grad = layer.bias.grad/(layer.bias.grad.norm() + 1e-8)
+    #print(layers[0].weight.grad)
+    optimizer.step()
+    if metaepoch % 100 == 0:
+        print(net.weight)
+        print(f"MetaEpoch {metaepoch}: Loss {loss.item()}")
+        print(f"Accuracy: {accuracy}")
     if loss.item() != loss.item():
         exit()
-    #import ipdb; ipdb.set_trace()
-    #outputs.detach()
-    #loss.backward(retain_graph=True)
-    loss.backward()
-    #prev_local_nn = net.local_nn.weight.clone().detach()
-    optimizer.step()
-    #diff = prev_local_nn - net.local_nn.weight
-    #print(diff)
-    #print(net.local_nn.weight)
-
-# Evaluate the network on the validation set
-with torch.no_grad():
-    outputs = net(val_dataset.dataset.tensors[0])
-    _, predicted = torch.max(outputs, 1)
-    accuracy = (predicted == val_dataset.dataset.tensors[1]).float().mean()
-
-print(f"Validation Accuracy: {accuracy}")
