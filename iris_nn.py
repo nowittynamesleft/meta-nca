@@ -88,7 +88,8 @@ class MetaNCA(nn.Module):
         #self.local_nn = nn.Linear(in_units+out_units, 1)
         hidden_size = 10
         self.local_nn = nn.Sequential(
-            nn.Linear(in_units+out_units + 1, hidden_size), # plus 1 for bias
+            #nn.Linear(in_units+out_units + 1, hidden_size), # plus 1 for bias
+            nn.Linear(in_units+out_units, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
@@ -97,34 +98,32 @@ class MetaNCA(nn.Module):
 
     def reset_weight(self):
         #import ipdb; ipdb.set_trace()
-        w = torch.zeros(self.in_units, self.out_units)
-        w[0, 0] = 1.0
-        b = torch.zeros(self.out_units,)
-        b[0] = 1.0
+        #w = torch.zeros(self.in_units, self.out_units)
+        #w[0, 0] = 1.0
+        #b = torch.zeros(self.out_units,)
+        #b[0] = 1.0
+        w = torch.randn(self.in_units, self.out_units)
         self.weight = nn.Parameter(w, requires_grad=False).to(self.device)
-        self.bias = nn.Parameter(b, requires_grad=False).to(self.device)
-        #self.weight = nn.Parameter(torch.randn(self.in_units, self.out_units), requires_grad=False).to(self.device)
-        #self.bias = nn.Parameter(torch.randn(self.out_units,), requires_grad=False).to(self.device)
+        #self.bias = nn.Parameter(b, requires_grad=False).to(self.device)
 
     def nca_local_rule(self, idx_in_units, idx_out_units):
         updates = torch.zeros_like(self.weight).to(self.device)
         #import ipdb; ipdb.set_trace()
         for i in idx_in_units:
             for j in idx_out_units:
-                #self.weight[i, j] += self.local_nn(torch.cat([self.weight[i, :].flatten(), self.weight[:, j].flatten()])) # this could be problematic, since we're not updating these all at once, and they are dependent on each other at the same time step. All updates should be calculated and only then should it be added to the whole weight matrix.
-                updates[i,j] = self.local_nn(torch.cat([self.weight[i, :].flatten(), self.weight[:, j].flatten(), self.bias[j]]))
-        self.weight = nn.Parameter(self.weight + updates)
-        for j in idx_out_units:
-            self.bias[j] += self.local_nn(torch.cat([torch.zeros((self.out_units,)), self.weight[:,j].flatten(), self.bias[j]]))
-        #self.weight.data = F.normalize(self.weight)
+                #updates[i,j] = self.local_nn(torch.cat([self.weight[i, :].flatten(), self.weight[:, j].flatten(), self.bias[j]]))
+                updates[i,j] = self.local_nn(torch.cat([self.weight[i, :].flatten(), self.weight[:, j].flatten()]))
+        self.weight.copy_(self.weight + updates)
+        #for j in idx_out_units:
+        #    self.bias[j] += self.local_nn(torch.cat([torch.zeros((self.out_units,)), self.weight[:,j].flatten(), self.bias[j]]))
 
     def forward(self, X):
         # Random sample without replacement
         idx_in_units = torch.randperm(self.in_units)[:int(self.in_units*self.prop_cells_updated)][:,None]
         idx_out_units = torch.randperm(self.out_units)[:int(self.out_units*self.prop_cells_updated)][:,None]
         self.nca_local_rule(idx_in_units, idx_out_units)
-        linear = torch.matmul(X, self.weight) + self.bias
-        #linear = torch.matmul(X, self.weight) # no bias for now
+        #linear = torch.matmul(X, self.weight) + self.bias
+        linear = torch.matmul(X, self.weight) # no bias for now
         return F.softmax(linear, dim=-1)
 
 
@@ -160,7 +159,7 @@ for metaepoch in range(100000):
         for layer in layers:
             if 'weight' in dir(layer):
                 layer.weight.grad = layer.weight.grad/(layer.weight.grad.norm() + 1e-8)
-                layer.bias.grad = layer.bias.grad/(layer.bias.grad.norm() + 1e-8)
+                #layer.bias.grad = layer.bias.grad/(layer.bias.grad.norm() + 1e-8)
     #print(layers[0].weight.grad)
     optimizer.step()
     if metaepoch % 100 == 0:
