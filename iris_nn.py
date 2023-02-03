@@ -77,7 +77,7 @@ class NCA_NN(nn.Module):
 
 
 class MetaNCA(nn.Module):
-    def __init__(self, in_units, out_units, prop_cells_updated=1.0, device=None):
+    def __init__(self, in_units, out_units, prop_cells_updated=0.5, device=None):
         super().__init__()
         self.device = device
         self.in_units = in_units
@@ -98,11 +98,11 @@ class MetaNCA(nn.Module):
 
     def reset_weight(self):
         #import ipdb; ipdb.set_trace()
-        #w = torch.zeros(self.in_units, self.out_units)
+        w = torch.zeros(self.in_units, self.out_units).to(self.device)
         #w[0, 0] = 1.0
         #b = torch.zeros(self.out_units,)
         #b[0] = 1.0
-        w = torch.randn(self.in_units, self.out_units)
+        #w = torch.randn(self.in_units, self.out_units)
         self.weight = nn.Parameter(w, requires_grad=False).to(self.device)
         #self.bias = nn.Parameter(b, requires_grad=False).to(self.device)
 
@@ -140,7 +140,11 @@ optimizer = optim.SGD(net.local_nn.parameters(), lr=0.001)
 # Train the network
 
 #torch.autograd.set_detect_anomaly(True)
+import time
+
+start = time.time()
 for metaepoch in range(100000):
+#for metaepoch in range(1000):
     net.reset_weight()
     loss = 0
     optimizer.zero_grad()
@@ -168,3 +172,9 @@ for metaepoch in range(100000):
         print(f"Accuracy: {accuracy}")
     if loss.item() != loss.item():
         exit()
+end = time.time()
+
+print('Total time: ' + str(end - start))
+print('Device: ' + device)
+# GPU: 21.401570320129395
+# CPU: 13.126130819320679
