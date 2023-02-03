@@ -76,7 +76,7 @@ class NCA_NN(nn.Module):
         return torch.matmul(X, self.weights)
 
 
-class MyLinear(nn.Module):
+class MetaNCA(nn.Module):
     def __init__(self, in_units, out_units, prop_cells_updated=1.0, device=None):
         super().__init__()
         self.device = device
@@ -88,7 +88,7 @@ class MyLinear(nn.Module):
         #self.local_nn = nn.Linear(in_units+out_units, 1)
         hidden_size = 10
         self.local_nn = nn.Sequential(
-            nn.Linear(in_units+out_units, hidden_size),
+            nn.Linear(in_units+out_units + 1, hidden_size), # plus 1 for bias
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
@@ -97,43 +97,51 @@ class MyLinear(nn.Module):
 
     def reset_weight(self):
         #import ipdb; ipdb.set_trace()
-        self.weight = nn.Parameter(torch.zeros(self.in_units, self.out_units), requires_grad=False).to(self.device)
-        #self.bias = nn.Parameter(torch.zeros(self.out_units,), requires_grad=False)
+        w = torch.zeros(self.in_units, self.out_units)
+        w[0, 0] = 1.0
+        b = torch.zeros(self.out_units,)
+        b[0] = 1.0
+        self.weight = nn.Parameter(w, requires_grad=False).to(self.device)
+        self.bias = nn.Parameter(b, requires_grad=False).to(self.device)
+        #self.weight = nn.Parameter(torch.randn(self.in_units, self.out_units), requires_grad=False).to(self.device)
+        #self.bias = nn.Parameter(torch.randn(self.out_units,), requires_grad=False).to(self.device)
 
     def nca_local_rule(self, idx_in_units, idx_out_units):
+        updates = torch.zeros_like(self.weight).to(self.device)
+        #import ipdb; ipdb.set_trace()
         for i in idx_in_units:
             for j in idx_out_units:
-                self.weight[i, j] += self.local_nn(torch.cat([self.weight[i, :].flatten(), self.weight[:, j].flatten()]))
+                #self.weight[i, j] += self.local_nn(torch.cat([self.weight[i, :].flatten(), self.weight[:, j].flatten()])) # this could be problematic, since we're not updating these all at once, and they are dependent on each other at the same time step. All updates should be calculated and only then should it be added to the whole weight matrix.
+                updates[i,j] = self.local_nn(torch.cat([self.weight[i, :].flatten(), self.weight[:, j].flatten(), self.bias[j]]))
+        self.weight = nn.Parameter(self.weight + updates)
+        for j in idx_out_units:
+            self.bias[j] += self.local_nn(torch.cat([torch.zeros((self.out_units,)), self.weight[:,j].flatten(), self.bias[j]]))
         #self.weight.data = F.normalize(self.weight)
 
     def forward(self, X):
-        #idx_in_units = torch.randint(0, self.in_units, (int(self.prop_cells_updated*self.in_units), 1))
-        #idx_out_units = torch.randint(0, self.out_units, (int(self.prop_cells_updated*self.out_units), 1))
         # Random sample without replacement
         idx_in_units = torch.randperm(self.in_units)[:int(self.in_units*self.prop_cells_updated)][:,None]
         idx_out_units = torch.randperm(self.out_units)[:int(self.out_units*self.prop_cells_updated)][:,None]
         self.nca_local_rule(idx_in_units, idx_out_units)
-        #linear = torch.matmul(X, self.weight) + self.bias
-        linear = torch.matmul(X, self.weight) # no bias for now
+        linear = torch.matmul(X, self.weight) + self.bias
+        #linear = torch.matmul(X, self.weight) # no bias for now
         return F.softmax(linear, dim=-1)
 
 
 # Initialize the network
 #net = Net()
-net = MyLinear(X.shape[1], y.max() + 1, device=device)
+net = MetaNCA(X.shape[1], y.max() + 1, device=device)
 net = net.to(device)
 # Define the loss function and optimizer
 criterion = nn.CrossEntropyLoss()
 #optimizer = optim.SGD(net.local_nn.parameters(), lr=0.01, momentum=0.9)
 optimizer = optim.SGD(net.local_nn.parameters(), lr=0.001)
+#optimizer = optim.SGD(net.local_nn.parameters(), lr=0.01)
 
 # Train the network
 
-#prev_local_nn = torch.zeros_like(net.local_nn.weight)
-# TODO: why can I not make gradient updates every epoch? Can't do it more than twice
-
 #torch.autograd.set_detect_anomaly(True)
-for metaepoch in range(10000):
+for metaepoch in range(100000):
     net.reset_weight()
     loss = 0
     optimizer.zero_grad()
