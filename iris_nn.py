@@ -5,8 +5,15 @@ import torch.optim as optim
 import torch.utils.data as data
 from sklearn import datasets
 import wandb
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument('run_name')
+
+args = parser.parse_args()
 
 wandb.init(project='meta_nca')
+wandb.run.name = args.run_name
 # Load the Iris dataset
 
 #device = 'cuda:0'
@@ -47,49 +54,30 @@ class Net(nn.Module):
         return x
 
 
-class NCA_NN(nn.Module):
-    def __init__(self, in_features, out_features, hidden_size, X, Y):
-        super(NCA_NN, self).__init__()
-
-        self.in_features = in_features
-        self.out_features = out_features
-        self.hidden_size = hidden_size
-
-        self.weights = nn.Parameter(torch.randn(in_features, out_features), requires_grad=False)
-        self.update_rule_network = nn.Sequential(
-            nn.Linear(in_features + out_features + X.shape[1] + Y.shape[1], hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, 1)
-        )
-
-    def local_update(self, X, Y):
-        delta_weights = torch.zeros(self.in_features, self.out_features)
-        for i in range(self.in_features):
-            for j in range(self.out_features):
-                neighbors = torch.cat((self.weights[i, :], self.weights[:, j]))
-                delta_weights[i, j] = self.update_rule_network(neighbors)
-
-        self.weights = self.weights + delta_weights
-        return self.weights
-
-    def forward(self, X):
-        return torch.matmul(X, self.weights)
-
-
 class MetaNCA(nn.Module):
-    def __init__(self, in_units, out_units, prop_cells_updated=0.5, device=None):
+    def __init__(self, in_units, out_units, prop_cells_updated=1.0, device=None):
         super().__init__()
         self.device = device
         self.in_units = in_units
         self.out_units = out_units
         self.reset_weight()
         self.prop_cells_updated = prop_cells_updated
+        self.hidden_state_dim
 
         #self.local_nn = nn.Linear(in_units+out_units, 1)
         hidden_size = 10
+        '''
         self.local_nn = nn.Sequential(
             #nn.Linear(in_units+out_units + 1, hidden_size), # plus 1 for bias
             nn.Linear(in_units+out_units, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, 1)
+        ).to(device)
+        '''
+        self.local_nn = nn.Sequential(
+            nn.Linear(3, hidden_size), # self, sum of forward connected weights, sum of backward connected weights
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
@@ -99,7 +87,7 @@ class MetaNCA(nn.Module):
     def reset_weight(self):
         #import ipdb; ipdb.set_trace()
         w = torch.zeros(self.in_units, self.out_units).to(self.device)
-        #w[0, 0] = 1.0
+        #w[:, 0] = 1.0
         #b = torch.zeros(self.out_units,)
         #b[0] = 1.0
         #w = torch.randn(self.in_units, self.out_units)
@@ -112,7 +100,23 @@ class MetaNCA(nn.Module):
         for i in idx_in_units:
             for j in idx_out_units:
                 #updates[i,j] = self.local_nn(torch.cat([self.weight[i, :].flatten(), self.weight[:, j].flatten(), self.bias[j]]))
+                '''
                 updates[i,j] = self.local_nn(torch.cat([self.weight[i, :].flatten(), self.weight[:, j].flatten()]))
+                '''
+                if i == 0:
+                    forward = self.weight[i+1:, j].flatten()
+                elif i == self.weight.shape[0]:
+                    forward = self.weight[:i, j].flatten()
+                else:
+                    forward = torch.cat((self.weight[:i,j].flatten(), self.weight[i+1:, j].flatten()))
+                if j == 0:
+                    backward = self.weight[i, j+1:].flatten()
+                elif j == self.weight.shape[1]:
+                    backward = self.weight[i, :j].flatten()
+                else:
+                    backward = torch.cat((self.weight[i,:j].flatten(), self.weight[i, j+1:].flatten()))
+                concatted = torch.cat((self.weight[i,j], torch.mean(forward)[None], torch.mean(backward)[None]))
+                updates[i,j] = self.local_nn(concatted)
         self.weight.copy_(self.weight + updates)
         #for j in idx_out_units:
         #    self.bias[j] += self.local_nn(torch.cat([torch.zeros((self.out_units,)), self.weight[:,j].flatten(), self.bias[j]]))
@@ -129,7 +133,8 @@ class MetaNCA(nn.Module):
 
 # Initialize the network
 #net = Net()
-net = MetaNCA(X.shape[1], y.max() + 1, device=device)
+#net = MetaNCA(X.shape[1], y.max() + 1, device=device)
+net = MetaNCA(X.shape[1], y.max() + 1, prop_cells_updated=0.5, device=device)
 net = net.to(device)
 # Define the loss function and optimizer
 criterion = nn.CrossEntropyLoss()
@@ -148,7 +153,7 @@ for metaepoch in range(100000):
     net.reset_weight()
     loss = 0
     optimizer.zero_grad()
-    for epoch in range(10):
+    for epoch in range(20):
         # Each forward call is a "step" of the simulation
         outputs = net(train_dataset.dataset.tensors[0])
 
