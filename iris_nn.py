@@ -50,19 +50,19 @@ class Net(nn.Module):
     def forward(self, x):
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        x = self.fc3(x)
+        x = F.softmax(self.fc3(x), dim=-1)
         return x
 
 
 class MetaNCA(nn.Module):
-    def __init__(self, in_units, out_units, prop_cells_updated=1.0, device=None):
+    def __init__(self, in_units, out_units, hidden_state_dim=None, prop_cells_updated=1.0, device=None):
         super().__init__()
         self.device = device
         self.in_units = in_units
         self.out_units = out_units
+        self.hidden_state_dim = hidden_state_dim
         self.reset_weight()
         self.prop_cells_updated = prop_cells_updated
-        self.hidden_state_dim
 
         #self.local_nn = nn.Linear(in_units+out_units, 1)
         hidden_size = 10
@@ -77,11 +77,13 @@ class MetaNCA(nn.Module):
         ).to(device)
         '''
         self.local_nn = nn.Sequential(
-            nn.Linear(3, hidden_size), # self, sum of forward connected weights, sum of backward connected weights
+            #nn.Linear(3, hidden_size), # self, sum of forward connected weights, sum of backward connected weights
+            nn.Linear(3 + 3*hidden_state_dim, hidden_size), # self, sum of forward connected weights, sum of backward connected weights, self hidden state, forward hidden state sum, backward hidden state sum
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, 1)
+            #nn.Linear(hidden_size, 1)
+            nn.Linear(hidden_size, 1 + hidden_state_dim)
         ).to(device)
 
     def reset_weight(self):
@@ -93,9 +95,17 @@ class MetaNCA(nn.Module):
         #w = torch.randn(self.in_units, self.out_units)
         self.weight = nn.Parameter(w, requires_grad=False).to(self.device)
         #self.bias = nn.Parameter(b, requires_grad=False).to(self.device)
+        if self.hidden_state_dim is not None:
+            self.hidden_state = torch.zeros(self.in_units, self.out_units, self.hidden_state_dim)
+            k = 0
+            for i in range(self.in_units):
+                for j in range(self.out_units):
+                    self.hidden_state[i,j,k] = 1.0 # intialized thing
+                    k += 1
 
     def nca_local_rule(self, idx_in_units, idx_out_units):
-        updates = torch.zeros_like(self.weight).to(self.device)
+        #updates = torch.zeros_like(self.weight).to(self.device)
+        updates = torch.zeros(self.weight.shape[0], self.weight.shape[1], 1+self.hidden_state_dim).to(self.device)
         #import ipdb; ipdb.set_trace()
         for i in idx_in_units:
             for j in idx_out_units:
@@ -105,19 +115,31 @@ class MetaNCA(nn.Module):
                 '''
                 if i == 0:
                     forward = self.weight[i+1:, j].flatten()
+                    forward_states = self.hidden_state[i+1:,j,:]
                 elif i == self.weight.shape[0]:
                     forward = self.weight[:i, j].flatten()
+                    forward_states = self.hidden_state[:i,j,:]
                 else:
                     forward = torch.cat((self.weight[:i,j].flatten(), self.weight[i+1:, j].flatten()))
+                    forward_states = torch.cat((self.hidden_state[:i,j], self.hidden_state[i+1:, j]))
                 if j == 0:
                     backward = self.weight[i, j+1:].flatten()
+                    backward_states = self.hidden_state[i,j+1:,:]
                 elif j == self.weight.shape[1]:
                     backward = self.weight[i, :j].flatten()
+                    backward_states = self.hidden_state[i,:j,:]
                 else:
                     backward = torch.cat((self.weight[i,:j].flatten(), self.weight[i, j+1:].flatten()))
-                concatted = torch.cat((self.weight[i,j], torch.mean(forward)[None], torch.mean(backward)[None]))
-                updates[i,j] = self.local_nn(concatted)
-        self.weight.copy_(self.weight + updates)
+                    backward_states = torch.cat((self.hidden_state[i,:j], self.hidden_state[i, j+1:]), dim=1)
+                concatted_weights = torch.cat((self.weight[i,j], torch.mean(forward)[None], torch.mean(backward)[None]))
+                #import ipdb; ipdb.set_trace()
+                concatted_states = torch.cat((self.hidden_state[i,j, :].flatten(), torch.mean(forward_states, dim=0).flatten(), torch.mean(backward_states, dim=1).flatten()))
+                concatted = torch.cat((concatted_weights, concatted_states))
+                updates[i,j, :] = self.local_nn(concatted)
+        weight_updates = updates[:,:,0] 
+        hidden_state_updates = updates[:,:,1:]
+        self.weight.copy_(self.weight + weight_updates)
+        self.hidden_state += hidden_state_updates
         #for j in idx_out_units:
         #    self.bias[j] += self.local_nn(torch.cat([torch.zeros((self.out_units,)), self.weight[:,j].flatten(), self.bias[j]]))
 
@@ -132,15 +154,35 @@ class MetaNCA(nn.Module):
 
 
 # Initialize the network
-#net = Net()
-#net = MetaNCA(X.shape[1], y.max() + 1, device=device)
-net = MetaNCA(X.shape[1], y.max() + 1, prop_cells_updated=0.5, device=device)
-net = net.to(device)
-# Define the loss function and optimizer
+regular_net = Net()
+regular_net = regular_net.to(device)
+#optimizer = optim.SGD(regular_net.parameters(), lr=0.001)
+optimizer = optim.Adam(regular_net.parameters(), lr=0.001)
 criterion = nn.CrossEntropyLoss()
+
+for epoch in range(1000):
+    loss = 0
+    optimizer.zero_grad()
+    outputs = regular_net(train_dataset.dataset.tensors[0])
+    loss = criterion(outputs, train_dataset.dataset.tensors[1])
+    loss.backward()
+    _, predicted = torch.max(outputs, 1)
+    accuracy = (predicted == train_dataset.dataset.tensors[1]).float().mean()
+    #wandb.log({'loss': loss.item(), 'accuracy': accuracy})
+    optimizer.step()
+    if epoch % 500 == 0:
+        print(f"Epoch {epoch}: Loss {loss.item()}")
+        print(f"Regular net Accuracy: {accuracy}")
+    
+#net = MetaNCA(X.shape[1], y.max() + 1, device=device)
+net = MetaNCA(X.shape[1], y.max() + 1, hidden_state_dim=3*5, prop_cells_updated=1.0, device=device)
+net = net.to(device)
+criterion = nn.CrossEntropyLoss()
+# Define the loss function and optimizer
 #optimizer = optim.SGD(net.local_nn.parameters(), lr=0.01, momentum=0.9)
-optimizer = optim.SGD(net.local_nn.parameters(), lr=0.001)
+#optimizer = optim.SGD(net.local_nn.parameters(), lr=0.001)
 #optimizer = optim.SGD(net.local_nn.parameters(), lr=0.01)
+optimizer = optim.Adam(net.local_nn.parameters(), lr=0.001)
 
 # Train the network
 
@@ -153,7 +195,7 @@ for metaepoch in range(100000):
     net.reset_weight()
     loss = 0
     optimizer.zero_grad()
-    for epoch in range(20):
+    for epoch in range(1):
         # Each forward call is a "step" of the simulation
         outputs = net(train_dataset.dataset.tensors[0])
 
