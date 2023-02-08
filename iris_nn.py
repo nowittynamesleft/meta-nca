@@ -31,6 +31,8 @@ dataset = data.TensorDataset(X, y)
 train_size = int(0.8 * len(dataset))
 val_size = len(dataset) - train_size
 train_dataset, val_dataset = data.random_split(dataset, [train_size, val_size])
+train_dataloader = data.DataLoader(train_dataset, batch_size=len(train_dataset))
+val_dataloader = data.DataLoader(val_dataset, batch_size=len(val_dataset))
 '''
 split = int(0.8 * len(X))
 train_X = X[:split, :]
@@ -63,6 +65,7 @@ class MetaNCA(nn.Module):
         self.hidden_state_dim = hidden_state_dim
         self.reset_weight()
         self.prop_cells_updated = prop_cells_updated
+        self.local_update = True
 
         #self.local_nn = nn.Linear(in_units+out_units, 1)
         hidden_size = 10
@@ -100,7 +103,7 @@ class MetaNCA(nn.Module):
             k = 0
             for i in range(self.in_units):
                 for j in range(self.out_units):
-                    self.hidden_state[i,j,k] = 1.0 # intialized thing
+                    self.hidden_state[i,j,k] = 1.0 # globally distinct states for intialization
                     k += 1
 
     def nca_local_rule(self, idx_in_units, idx_out_units):
@@ -147,7 +150,8 @@ class MetaNCA(nn.Module):
         # Random sample without replacement
         idx_in_units = torch.randperm(self.in_units)[:int(self.in_units*self.prop_cells_updated)][:,None]
         idx_out_units = torch.randperm(self.out_units)[:int(self.out_units*self.prop_cells_updated)][:,None]
-        self.nca_local_rule(idx_in_units, idx_out_units)
+        if self.local_update:
+            self.nca_local_rule(idx_in_units, idx_out_units)
         #linear = torch.matmul(X, self.weight) + self.bias
         linear = torch.matmul(X, self.weight) # no bias for now
         return F.softmax(linear, dim=-1)
@@ -162,17 +166,31 @@ criterion = nn.CrossEntropyLoss()
 
 for epoch in range(1000):
     loss = 0
+    correct= 0
     optimizer.zero_grad()
-    outputs = regular_net(train_dataset.dataset.tensors[0])
-    loss = criterion(outputs, train_dataset.dataset.tensors[1])
+    for (X,y) in train_dataloader:
+        outputs = regular_net(X)
+        loss += criterion(outputs, y)
+        _, predicted = torch.max(outputs, 1)
+        correct += (predicted == y).float().sum()
+        
     loss.backward()
-    _, predicted = torch.max(outputs, 1)
-    accuracy = (predicted == train_dataset.dataset.tensors[1]).float().mean()
+    accuracy = correct / train_size
     #wandb.log({'loss': loss.item(), 'accuracy': accuracy})
     optimizer.step()
     if epoch % 500 == 0:
         print(f"Epoch {epoch}: Loss {loss.item()}")
         print(f"Regular net Accuracy: {accuracy}")
+        #import ipdb; ipdb.set_trace()
+        val_loss = 0
+        correct = 0
+        for (X,y) in val_dataloader:
+            outputs = regular_net(X)
+            val_loss += criterion(outputs, y)
+            _, predicted = torch.max(outputs, 1)
+            correct += (predicted == y).float().sum()
+        val_accuracy = correct / val_size
+        print(f"Val accuracy: {val_accuracy}")
     
 #net = MetaNCA(X.shape[1], y.max() + 1, device=device)
 net = MetaNCA(X.shape[1], y.max() + 1, hidden_state_dim=3*5, prop_cells_updated=1.0, device=device)
@@ -190,19 +208,25 @@ optimizer = optim.Adam(net.local_nn.parameters(), lr=0.001)
 import time
 
 start = time.time()
-for metaepoch in range(100000):
+print(train_dataset)
+print(val_dataset)
+for metaepoch in range(1000):
 #for metaepoch in range(1000):
     net.reset_weight()
     loss = 0
     optimizer.zero_grad()
-    for epoch in range(1):
+    for epoch in range(10):
         # Each forward call is a "step" of the simulation
-        outputs = net(train_dataset.dataset.tensors[0])
+        correct = 0
+        for (X,y) in train_dataloader:
+            outputs = net(X)
+            _, predicted = torch.max(outputs, 1)
+            correct += (predicted == y).float().sum()
+            loss += criterion(outputs, y)
 
-    loss = criterion(outputs, train_dataset.dataset.tensors[1])
+    #loss = criterion(outputs, train_dataset.dataset.tensors[1])
     loss.backward()
-    _, predicted = torch.max(outputs, 1)
-    accuracy = (predicted == train_dataset.dataset.tensors[1]).float().mean()
+    accuracy = correct / train_size
     wandb.log({'loss': loss.item(), 'accuracy': accuracy})
 
     layers = list(net.local_nn.modules())[1:]
@@ -217,10 +241,52 @@ for metaepoch in range(100000):
         print(net.weight)
         print(f"MetaEpoch {metaepoch}: Loss {loss.item()}")
         print(f"Accuracy: {accuracy}")
+        net.local_update = False
+        correct = 0
+        for (X, y) in val_dataloader:
+            test_outputs = net(X)
+            _, predicted = torch.max(test_outputs, 1)
+            correct += (predicted == y).float().sum()
+        val_accuracy = correct / val_size
+        print(f"Val accuracy: {val_accuracy}")
+        wandb.log({'val_accuracy': val_accuracy})
+        net.local_update = True
+
     if loss.item() != loss.item():
         exit()
 end = time.time()
 
+with torch.no_grad():
+    num_model_samples = 100
+    acc_sum = 0
+    val_acc_sum = 0
+    for model_ind in range(num_model_samples):
+        net.reset_weight()
+        for epoch in range(10):
+            # Each forward call is a "step" of the simulation
+            correct = 0
+            for (X,y) in train_dataloader:
+                outputs = net(X)
+                _, predicted = torch.max(outputs, 1)
+                correct += (predicted == y).float().sum()
+        
+        accuracy = correct / train_size
+        acc_sum += accuracy
+        print(f"Accuracy: {accuracy}")
+        val_acc_sum += val_accuracy
+        net.local_update = False
+        correct = 0
+        for (X, y) in val_dataloader:
+            test_outputs = net(X)
+            _, predicted = torch.max(test_outputs, 1)
+            correct += (predicted == y).float().sum()
+        val_accuracy = correct / val_size
+        print(f"Val accuracy: {val_accuracy}")
+        net.local_update = True
+        print(net.weight)
+
+print('Avg train accuracy: ' + str(acc_sum/num_model_samples))
+print('Avg Val accuracy: ' + str(val_acc_sum/num_model_samples))
 print('Total time: ' + str(end - start))
 print('Device: ' + device)
 # GPU: 21.401570320129395
