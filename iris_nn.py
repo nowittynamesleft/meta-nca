@@ -6,6 +6,8 @@ import torch.utils.data as data
 from sklearn import datasets
 import wandb
 import argparse
+import matplotlib
+import matplotlib.pyplot as plt
 
 parser = argparse.ArgumentParser()
 parser.add_argument('run_name')
@@ -33,13 +35,29 @@ val_size = len(dataset) - train_size
 train_dataset, val_dataset = data.random_split(dataset, [train_size, val_size])
 train_dataloader = data.DataLoader(train_dataset, batch_size=len(train_dataset))
 val_dataloader = data.DataLoader(val_dataset, batch_size=len(val_dataset))
-'''
-split = int(0.8 * len(X))
-train_X = X[:split, :]
-train_y = y[:split]
-val_X = X[split:, :]
-val_y = y[split:]
-'''
+
+viz_dir = 'visualizations/'
+
+import imageio
+import os
+
+def create_weight_gif(layer_num, metaepoch, num_epochs, gif_name='weights.gif', directory='visualizations/'):
+    images = []
+    for epoch in range(num_epochs):
+        # Read each weight matrix as a jpg file
+        images.append(imageio.imread(f'{directory}W_{layer_num}_metaepoch_{metaepoch}_epoch_{epoch}.jpg'))
+    
+    # Create the gif using the weight visualizations
+    imageio.mimsave(gif_name, images, fps=5)
+    
+
+def visualize_weights(weights, metaepoch, epoch, directory='visualizations/'):
+    curr_weights = [w.detach() for w in weights]
+    for i, W in enumerate(curr_weights):
+        plt.imshow(W, cmap='gray')
+        plt.axis('off')
+        plt.savefig(f'{directory}W_{i}_metaepoch_{metaepoch}_epoch_{epoch}.jpg')
+        plt.close()
 
 # Define the neural network
 class Net(nn.Module):
@@ -57,18 +75,20 @@ class Net(nn.Module):
 
 
 class MetaNCA(nn.Module):
-    def __init__(self, in_units, out_units, hidden_state_dim=None, prop_cells_updated=1.0, device=None):
+    def __init__(self, in_units, out_units, num_layers=1, hidden_state_dim=None, prop_cells_updated=1.0, device=None):
         super().__init__()
         self.device = device
         self.in_units = in_units
         self.out_units = out_units
         self.hidden_state_dim = hidden_state_dim
-        self.reset_weight()
+        self.num_layers = num_layers
         self.prop_cells_updated = prop_cells_updated
         self.local_update = True
 
         #self.local_nn = nn.Linear(in_units+out_units, 1)
-        hidden_size = 10
+        self.classification_nn_hidden_size = 5
+        local_nn_hidden_size = 10
+        self.reset_weight()
         '''
         self.local_nn = nn.Sequential(
             #nn.Linear(in_units+out_units + 1, hidden_size), # plus 1 for bias
@@ -80,81 +100,107 @@ class MetaNCA(nn.Module):
         ).to(device)
         '''
         self.local_nn = nn.Sequential(
-            #nn.Linear(3, hidden_size), # self, sum of forward connected weights, sum of backward connected weights
-            nn.Linear(3 + 3*hidden_state_dim, hidden_size), # self, sum of forward connected weights, sum of backward connected weights, self hidden state, forward hidden state sum, backward hidden state sum
+            nn.Linear(3 + 3*hidden_state_dim, local_nn_hidden_size), # self, sum of forward connected weights, sum of backward connected weights, self hidden state, forward hidden state sum, backward hidden state sum
             nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
+            nn.Linear(local_nn_hidden_size, local_nn_hidden_size),
             nn.ReLU(),
-            #nn.Linear(hidden_size, 1)
-            nn.Linear(hidden_size, 1 + hidden_state_dim)
+            nn.Linear(local_nn_hidden_size, 1 + hidden_state_dim)
         ).to(device)
 
     def reset_weight(self):
         #import ipdb; ipdb.set_trace()
-        w = torch.zeros(self.in_units, self.out_units).to(self.device)
         #w[:, 0] = 1.0
         #b = torch.zeros(self.out_units,)
         #b[0] = 1.0
         #w = torch.randn(self.in_units, self.out_units)
-        self.weight = nn.Parameter(w, requires_grad=False).to(self.device)
+        self.weights = []
+        self.hidden_states = []
+        for l in range(self.num_layers):
+            if self.num_layers == 1:
+                w = torch.zeros(self.in_units, self.out_units).to(self.device)
+            elif l == 0:
+                w = torch.zeros(self.in_units, self.classification_nn_hidden_size).to(self.device)
+            elif l == self.num_layers - 1:
+                w = torch.zeros(self.classification_nn_hidden_size, self.out_units).to(self.device)
+            else:
+                w = torch.zeros(self.classification_nn_hidden_size, self.classification_nn_hidden_size).to(self.device)
+            self.weights.append(nn.Parameter(w, requires_grad=False))
+            #self.weights.append(nn.Parameter(w))
+            if self.hidden_state_dim is not None:
+                hidden_state = torch.zeros(w.shape[0], w.shape[1], self.hidden_state_dim)
+                k = 0
+                for i in range(w.shape[0]):
+                    for j in range(w.shape[1]):
+                        hidden_state[i,j,k] = 1.0 # globally distinct states for intialization
+                        k += 1
+            self.hidden_states.append(hidden_state)
+        #self.weight = nn.Parameter(w, requires_grad=False).to(self.device)
         #self.bias = nn.Parameter(b, requires_grad=False).to(self.device)
-        if self.hidden_state_dim is not None:
-            self.hidden_state = torch.zeros(self.in_units, self.out_units, self.hidden_state_dim)
-            k = 0
-            for i in range(self.in_units):
-                for j in range(self.out_units):
-                    self.hidden_state[i,j,k] = 1.0 # globally distinct states for intialization
-                    k += 1
 
-    def nca_local_rule(self, idx_in_units, idx_out_units):
-        #updates = torch.zeros_like(self.weight).to(self.device)
-        updates = torch.zeros(self.weight.shape[0], self.weight.shape[1], 1+self.hidden_state_dim).to(self.device)
+    def nca_local_rule(self, param, hidden_states):
+        #updates = torch.zeros_like(param).to(self.device)
+        torch.autograd.set_detect_anomaly(True)
+        updates = torch.zeros(param.shape[0], param.shape[1], 1+hidden_states.shape[2]).to(self.device)
+        idx_in_units = torch.randperm(param.shape[0])[:int(param.shape[0]*self.prop_cells_updated)][:,None]
+        idx_out_units = torch.randperm(param.shape[1])[:int(param.shape[1]*self.prop_cells_updated)][:,None]
         #import ipdb; ipdb.set_trace()
         for i in idx_in_units:
             for j in idx_out_units:
-                #updates[i,j] = self.local_nn(torch.cat([self.weight[i, :].flatten(), self.weight[:, j].flatten(), self.bias[j]]))
+                #updates[i,j] = self.local_nn(torch.cat([param[i, :].flatten(), param[:, j].flatten(), self.bias[j]]))
                 '''
-                updates[i,j] = self.local_nn(torch.cat([self.weight[i, :].flatten(), self.weight[:, j].flatten()]))
+                updates[i,j] = self.local_nn(torch.cat([param[i, :].flatten(), param[:, j].flatten()]))
                 '''
                 if i == 0:
-                    forward = self.weight[i+1:, j].flatten()
-                    forward_states = self.hidden_state[i+1:,j,:]
-                elif i == self.weight.shape[0]:
-                    forward = self.weight[:i, j].flatten()
-                    forward_states = self.hidden_state[:i,j,:]
+                    forward = param[i+1:, j].flatten()
+                    forward_states = hidden_states[i+1:,j,:]
+                elif i == param.shape[0]:
+                    forward = param[:i, j].flatten()
+                    forward_states = hidden_states[:i,j,:]
                 else:
-                    forward = torch.cat((self.weight[:i,j].flatten(), self.weight[i+1:, j].flatten()))
-                    forward_states = torch.cat((self.hidden_state[:i,j], self.hidden_state[i+1:, j]))
+                    forward = torch.cat((param[:i,j].flatten(), param[i+1:, j].flatten()))
+                    forward_states = torch.cat((hidden_states[:i,j], hidden_states[i+1:, j]))
                 if j == 0:
-                    backward = self.weight[i, j+1:].flatten()
-                    backward_states = self.hidden_state[i,j+1:,:]
-                elif j == self.weight.shape[1]:
-                    backward = self.weight[i, :j].flatten()
-                    backward_states = self.hidden_state[i,:j,:]
+                    backward = param[i, j+1:].flatten()
+                    backward_states = hidden_states[i,j+1:,:]
+                elif j == param.shape[1]:
+                    backward = param[i, :j].flatten()
+                    backward_states = hidden_states[i,:j,:]
                 else:
-                    backward = torch.cat((self.weight[i,:j].flatten(), self.weight[i, j+1:].flatten()))
-                    backward_states = torch.cat((self.hidden_state[i,:j], self.hidden_state[i, j+1:]), dim=1)
-                concatted_weights = torch.cat((self.weight[i,j], torch.mean(forward)[None], torch.mean(backward)[None]))
+                    backward = torch.cat((param[i,:j].flatten(), param[i, j+1:].flatten()))
+                    backward_states = torch.cat((hidden_states[i,:j], hidden_states[i, j+1:]), dim=1)
+                concatted_weights = torch.cat((param[i,j], torch.mean(forward)[None], torch.mean(backward)[None]))
                 #import ipdb; ipdb.set_trace()
-                concatted_states = torch.cat((self.hidden_state[i,j, :].flatten(), torch.mean(forward_states, dim=0).flatten(), torch.mean(backward_states, dim=1).flatten()))
+                concatted_states = torch.cat((hidden_states[i,j, :].flatten(), torch.mean(forward_states, dim=0).flatten(), torch.mean(backward_states, dim=1).flatten()))
                 concatted = torch.cat((concatted_weights, concatted_states))
                 updates[i,j, :] = self.local_nn(concatted)
         weight_updates = updates[:,:,0] 
         hidden_state_updates = updates[:,:,1:]
-        self.weight.copy_(self.weight + weight_updates)
-        self.hidden_state += hidden_state_updates
+        return weight_updates, hidden_state_updates
         #for j in idx_out_units:
         #    self.bias[j] += self.local_nn(torch.cat([torch.zeros((self.out_units,)), self.weight[:,j].flatten(), self.bias[j]]))
 
     def forward(self, X):
         # Random sample without replacement
-        idx_in_units = torch.randperm(self.in_units)[:int(self.in_units*self.prop_cells_updated)][:,None]
-        idx_out_units = torch.randperm(self.out_units)[:int(self.out_units*self.prop_cells_updated)][:,None]
         if self.local_update:
-            self.nca_local_rule(idx_in_units, idx_out_units)
-        #linear = torch.matmul(X, self.weight) + self.bias
-        linear = torch.matmul(X, self.weight) # no bias for now
-        return F.softmax(linear, dim=-1)
+            all_weight_updates = []
+            all_hidden_state_updates = []
+            for (weight, hidden_state) in zip(self.weights, self.hidden_states):
+                weight_updates, hidden_state_updates = self.nca_local_rule(weight, hidden_state)
+                all_weight_updates.append(weight_updates)
+                all_hidden_state_updates.append(hidden_state_updates)
+            # only update after all updates have been calculated
+            for layer, (weight, hidden_state) in enumerate(zip(self.weights, self.hidden_states)):
+                weight.copy_(weight + all_weight_updates[layer])
+                hidden_state += all_hidden_state_updates[layer]
+                #new_weight = weight.clone()
+                #new_weight += all_weight_updates[layer]
+                #weight.copy_(new_weight)
+                #weight.data += all_weight_updates[layer]
+        prev_layer = X
+        for i in range(self.num_layers):
+            linear = torch.matmul(prev_layer, self.weights[i]) # no bias for now
+            prev_layer = F.relu(linear)
+        return F.softmax(prev_layer, dim=-1)
 
 
 # Initialize the network
@@ -193,7 +239,8 @@ for epoch in range(1000):
         print(f"Val accuracy: {val_accuracy}")
     
 #net = MetaNCA(X.shape[1], y.max() + 1, device=device)
-net = MetaNCA(X.shape[1], y.max() + 1, hidden_state_dim=3*5, prop_cells_updated=1.0, device=device)
+num_layers = 1
+net = MetaNCA(X.shape[1], y.max() + 1, num_layers=num_layers, hidden_state_dim=5*5, prop_cells_updated=0.5, device=device)
 net = net.to(device)
 criterion = nn.CrossEntropyLoss()
 # Define the loss function and optimizer
@@ -208,24 +255,32 @@ optimizer = optim.Adam(net.local_nn.parameters(), lr=0.001)
 import time
 
 start = time.time()
-print(train_dataset)
-print(val_dataset)
-for metaepoch in range(1000):
+log_every_n_epochs = 100
+num_metaepochs = 500
+num_epochs = 5
+
+for metaepoch in range(num_metaepochs):
 #for metaepoch in range(1000):
     net.reset_weight()
+    net.zero_grad()
     loss = 0
-    optimizer.zero_grad()
-    for epoch in range(10):
+    #optimizer.zero_grad()
+    for epoch in range(num_epochs):
         # Each forward call is a "step" of the simulation
         correct = 0
+        if metaepoch % log_every_n_epochs == 0:
+            #curr_weights = [w.detach() for w in net.weights]
+            #visualize_weights(net.weights, metaepoch, epoch)
+            visualize_weights(net.weights, metaepoch, epoch, directory=viz_dir)
         for (X,y) in train_dataloader:
             outputs = net(X)
             _, predicted = torch.max(outputs, 1)
             correct += (predicted == y).float().sum()
             loss += criterion(outputs, y)
+    loss.backward()
+    optimizer.step()
 
     #loss = criterion(outputs, train_dataset.dataset.tensors[1])
-    loss.backward()
     accuracy = correct / train_size
     wandb.log({'loss': loss.item(), 'accuracy': accuracy})
 
@@ -236,9 +291,7 @@ for metaepoch in range(1000):
                 layer.weight.grad = layer.weight.grad/(layer.weight.grad.norm() + 1e-8)
                 #layer.bias.grad = layer.bias.grad/(layer.bias.grad.norm() + 1e-8)
     #print(layers[0].weight.grad)
-    optimizer.step()
-    if metaepoch % 100 == 0:
-        print(net.weight)
+    if metaepoch % log_every_n_epochs == 0:
         print(f"MetaEpoch {metaepoch}: Loss {loss.item()}")
         print(f"Accuracy: {accuracy}")
         net.local_update = False
@@ -256,13 +309,22 @@ for metaepoch in range(1000):
         exit()
 end = time.time()
 
+import ipdb; ipdb.set_trace()
+for logged_metaepoch in range(int(num_metaepochs/log_every_n_epochs)):
+    metaepoch = logged_metaepoch*log_every_n_epochs
+    for layer_num in range(num_layers):
+        create_weight_gif(layer_num, metaepoch, num_epochs, gif_name='W_' + str(layer_num) + '_metaepoch_' + str(metaepoch) + '.gif')
+    
 with torch.no_grad():
     num_model_samples = 100
     acc_sum = 0
     val_acc_sum = 0
     for model_ind in range(num_model_samples):
+        new_hidden_dim = torch.randint(low=10, high=100, size=(1,))[0]
+        print('new hidden dim: ' + str(new_hidden_dim))
+        net.hidden_dim = new_hidden_dim
         net.reset_weight()
-        for epoch in range(10):
+        for epoch in range(num_epochs):
             # Each forward call is a "step" of the simulation
             correct = 0
             for (X,y) in train_dataloader:
@@ -285,9 +347,11 @@ with torch.no_grad():
         net.local_update = True
         print(net.weight)
 
+
 print('Avg train accuracy: ' + str(acc_sum/num_model_samples))
 print('Avg Val accuracy: ' + str(val_acc_sum/num_model_samples))
 print('Total time: ' + str(end - start))
 print('Device: ' + device)
+
 # GPU: 21.401570320129395
 # CPU: 13.126130819320679
