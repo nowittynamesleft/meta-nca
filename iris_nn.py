@@ -8,6 +8,7 @@ import wandb
 import argparse
 import matplotlib
 import matplotlib.pyplot as plt
+import numpy as np
 
 parser = argparse.ArgumentParser()
 parser.add_argument('run_name')
@@ -75,12 +76,11 @@ class Net(nn.Module):
 
 
 class MetaNCA(nn.Module):
-    def __init__(self, in_units, out_units, num_layers=1, hidden_state_dim=None, prop_cells_updated=1.0, device=None):
+    def __init__(self, in_units, out_units, num_layers=1, prop_cells_updated=1.0, device=None):
         super().__init__()
         self.device = device
         self.in_units = in_units
         self.out_units = out_units
-        self.hidden_state_dim = hidden_state_dim
         self.num_layers = num_layers
         self.prop_cells_updated = prop_cells_updated
         self.local_update = True
@@ -89,6 +89,7 @@ class MetaNCA(nn.Module):
         self.classification_nn_hidden_size = 5
         local_nn_hidden_size = 10
         self.reset_weight()
+        self.hidden_state_dim = self.hidden_states[0].shape[-1]
         '''
         self.local_nn = nn.Sequential(
             #nn.Linear(in_units+out_units + 1, hidden_size), # plus 1 for bias
@@ -100,11 +101,11 @@ class MetaNCA(nn.Module):
         ).to(device)
         '''
         self.local_nn = nn.Sequential(
-            nn.Linear(3 + 3*hidden_state_dim, local_nn_hidden_size), # self, sum of forward connected weights, sum of backward connected weights, self hidden state, forward hidden state sum, backward hidden state sum
+            nn.Linear(3 + 3*self.hidden_state_dim, local_nn_hidden_size), # self, sum of forward connected weights, sum of backward connected weights, self hidden state, forward hidden state sum, backward hidden state sum
             nn.ReLU(),
             nn.Linear(local_nn_hidden_size, local_nn_hidden_size),
             nn.ReLU(),
-            nn.Linear(local_nn_hidden_size, 1 + hidden_state_dim)
+            nn.Linear(local_nn_hidden_size, 1 + self.hidden_state_dim)
         ).to(device)
 
     def reset_weight(self):
@@ -126,6 +127,7 @@ class MetaNCA(nn.Module):
                 w = torch.zeros(self.classification_nn_hidden_size, self.classification_nn_hidden_size).to(self.device)
             self.weights.append(nn.Parameter(w, requires_grad=False))
             #self.weights.append(nn.Parameter(w))
+        '''
             if self.hidden_state_dim is not None:
                 hidden_state = torch.zeros(w.shape[0], w.shape[1], self.hidden_state_dim)
                 k = 0
@@ -134,8 +136,10 @@ class MetaNCA(nn.Module):
                         hidden_state[i,j,k] = 1.0 # globally distinct states for intialization
                         k += 1
             self.hidden_states.append(hidden_state)
+        '''
         #self.weight = nn.Parameter(w, requires_grad=False).to(self.device)
         #self.bias = nn.Parameter(b, requires_grad=False).to(self.device)
+        self.hidden_states = self.encode_weight_hidden_states(self.weights)
 
     def nca_local_rule(self, param, hidden_states):
         #updates = torch.zeros_like(param).to(self.device)
@@ -169,15 +173,50 @@ class MetaNCA(nn.Module):
                     backward = torch.cat((param[i,:j].flatten(), param[i, j+1:].flatten()))
                     backward_states = torch.cat((hidden_states[i,:j], hidden_states[i, j+1:]), dim=1)
                 concatted_weights = torch.cat((param[i,j], torch.mean(forward)[None], torch.mean(backward)[None]))
-                #import ipdb; ipdb.set_trace()
                 concatted_states = torch.cat((hidden_states[i,j, :].flatten(), torch.mean(forward_states, dim=0).flatten(), torch.mean(backward_states, dim=1).flatten()))
                 concatted = torch.cat((concatted_weights, concatted_states))
+                #import ipdb; ipdb.set_trace()
                 updates[i,j, :] = self.local_nn(concatted)
         weight_updates = updates[:,:,0] 
         hidden_state_updates = updates[:,:,1:]
         return weight_updates, hidden_state_updates
         #for j in idx_out_units:
         #    self.bias[j] += self.local_nn(torch.cat([torch.zeros((self.out_units,)), self.weight[:,j].flatten(), self.bias[j]]))
+
+    def encode_weight_hidden_states(self, weights):
+        # binary encoding
+        num_layers = len(weights)
+        max_num_layer_weights = 0
+        for weight in weights:
+            curr_num_weights = weight.shape[0]*weight.shape[1]
+            if curr_num_weights > max_num_layer_weights:
+                max_num_layer_weights = curr_num_weights
+        #import ipdb; ipdb.set_trace()
+        #layer_encoding_dim = int(torch.ceil(torch.log(torch.tensor(num_layers))/torch.log(torch.tensor(2))).item())
+        layer_encoding_dim = int(np.ceil(np.log(num_layers)/np.log(2)))
+
+        #weight_encoding_dim = int(torch.ceil(torch.log(torch.tensor(max_num_layer_weights))/torch.log(torch.tensor(2))).item())
+        weight_encoding_dim = int(np.ceil(np.log(max_num_layer_weights)/np.log(2)))
+        total_encoding_dim = layer_encoding_dim + weight_encoding_dim
+        hidden_states = []
+        for layer_num, weight_mat in enumerate(weights):
+            encodings = torch.zeros(weight.shape[0], weight.shape[1], total_encoding_dim)
+            encodings[:, :, :layer_encoding_dim] = self.get_binary_encoding_vector(layer_num, layer_encoding_dim)
+            k = 0
+            for i in range(weight_mat.shape[0]):
+                for j in range(weight_mat.shape[1]):
+                    encodings[i, j, layer_encoding_dim:] = self.get_binary_encoding_vector(k, weight_encoding_dim)
+                    k += 1
+            hidden_states.append(encodings)
+        #import ipdb; ipdb.set_trace()
+        return hidden_states
+
+    def get_binary_encoding_vector(self, number, encoding_dim):
+        binary = bin(number)[2:]
+        diff = encoding_dim - len(binary)
+        if diff > 0:
+            binary = diff*'0' + binary
+        return torch.tensor(np.fromstring(','.join(list(binary)), sep=',', dtype=int))
 
     def forward(self, X):
         # Random sample without replacement
@@ -240,7 +279,8 @@ for epoch in range(1000):
     
 #net = MetaNCA(X.shape[1], y.max() + 1, device=device)
 num_layers = 1
-net = MetaNCA(X.shape[1], y.max() + 1, num_layers=num_layers, hidden_state_dim=5*5, prop_cells_updated=0.5, device=device)
+#net = MetaNCA(X.shape[1], y.max() + 1, num_layers=num_layers, hidden_state_dim=5*5, prop_cells_updated=0.5, device=device)
+net = MetaNCA(X.shape[1], y.max() + 1, num_layers=num_layers, prop_cells_updated=1.0, device=device)
 net = net.to(device)
 criterion = nn.CrossEntropyLoss()
 # Define the loss function and optimizer
@@ -263,8 +303,8 @@ for metaepoch in range(num_metaepochs):
 #for metaepoch in range(1000):
     net.reset_weight()
     net.zero_grad()
+    optimizer.zero_grad()
     loss = 0
-    #optimizer.zero_grad()
     for epoch in range(num_epochs):
         # Each forward call is a "step" of the simulation
         correct = 0
@@ -309,7 +349,6 @@ for metaepoch in range(num_metaepochs):
         exit()
 end = time.time()
 
-import ipdb; ipdb.set_trace()
 for logged_metaepoch in range(int(num_metaepochs/log_every_n_epochs)):
     metaepoch = logged_metaepoch*log_every_n_epochs
     for layer_num in range(num_layers):
@@ -345,7 +384,6 @@ with torch.no_grad():
         val_accuracy = correct / val_size
         print(f"Val accuracy: {val_accuracy}")
         net.local_update = True
-        print(net.weight)
 
 
 print('Avg train accuracy: ' + str(acc_sum/num_model_samples))
