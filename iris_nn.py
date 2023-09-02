@@ -49,11 +49,12 @@ def create_weight_gif(layer_num, metaepoch, num_epochs, gif_name='weights.gif', 
         images.append(imageio.imread(f'{directory}W_{layer_num}_metaepoch_{metaepoch}_epoch_{epoch}.jpg'))
     
     # Create the gif using the weight visualizations
-    imageio.mimsave(gif_name, images, fps=5)
+    #imageio.mimsave(gif_name, images, fps=5)
+    imageio.mimsave(gif_name, images, duration=2)
     
 
 def visualize_weights(weights, metaepoch, epoch, directory='visualizations/'):
-    curr_weights = [w.detach() for w in weights]
+    curr_weights = [w.cpu().detach() for w in weights]
     for i, W in enumerate(curr_weights):
         plt.imshow(W, cmap='gray')
         plt.axis('off')
@@ -200,7 +201,7 @@ class MetaNCA(nn.Module):
         total_encoding_dim = layer_encoding_dim + weight_encoding_dim
         hidden_states = []
         for layer_num, weight_mat in enumerate(weights):
-            encodings = torch.zeros(weight.shape[0], weight.shape[1], total_encoding_dim)
+            encodings = torch.zeros(weight.shape[0], weight.shape[1], total_encoding_dim, device=self.device)
             encodings[:, :, :layer_encoding_dim] = self.get_binary_encoding_vector(layer_num, layer_encoding_dim)
             k = 0
             for i in range(weight_mat.shape[0]):
@@ -216,7 +217,7 @@ class MetaNCA(nn.Module):
         diff = encoding_dim - len(binary)
         if diff > 0:
             binary = diff*'0' + binary
-        return torch.tensor(np.fromstring(','.join(list(binary)), sep=',', dtype=int))
+        return torch.tensor(np.fromstring(','.join(list(binary)), sep=',', dtype=int), device=self.device)
 
     def forward(self, X):
         # Random sample without replacement
@@ -311,7 +312,10 @@ for metaepoch in range(num_metaepochs):
         if metaepoch % log_every_n_epochs == 0:
             #curr_weights = [w.detach() for w in net.weights]
             #visualize_weights(net.weights, metaepoch, epoch)
+            viz_start = time.time()
             visualize_weights(net.weights, metaepoch, epoch, directory=viz_dir)
+            viz_end = time.time()
+            print('Time for visualization for current step: ' + str(viz_end - viz_start))
         for (X,y) in train_dataloader:
             outputs = net(X)
             _, predicted = torch.max(outputs, 1)

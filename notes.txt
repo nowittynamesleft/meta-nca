@@ -1,0 +1,8 @@
+- Training seems unstable; sometimes 500 meta-epochs gets to 96% val accuracy and sometimes it stays at 33% the whole time
+- CPU training is faster (500 metaepochs with visualizations: 91 seconds with GPU, 44 seconds with CPU)
+	- no visualization: 46 seconds with CPU (?), 84 seconds with GPU
+
+- Todo:
+	- Make it possible to have more than one layer. Very important.
+	- What can I do to understand the way these things learn? 
+	- How did David Ha "learn" gradient descent with local rules?
