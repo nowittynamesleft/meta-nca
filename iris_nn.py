@@ -9,14 +9,17 @@ import argparse
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+from reparam_module import ReparamModule
 
 parser = argparse.ArgumentParser()
 parser.add_argument('run_name')
+parser.add_argument('--no_log', action='store_false')
 
 args = parser.parse_args()
 
-wandb.init(project='meta_nca')
-wandb.run.name = args.run_name
+if not args.no_log:
+    wandb.init(project='meta_nca')
+    wandb.run.name = args.run_name
 # Load the Iris dataset
 
 #device = 'cuda:0'
@@ -41,6 +44,8 @@ viz_dir = 'visualizations/'
 
 import imageio
 import os
+
+
 
 def create_weight_gif(layer_num, metaepoch, num_epochs, gif_name='weights.gif', directory='visualizations/'):
     images = []
@@ -138,6 +143,7 @@ class MetaNCA(nn.Module):
                         k += 1
             self.hidden_states.append(hidden_state)
         '''
+        
         #self.weight = nn.Parameter(w, requires_grad=False).to(self.device)
         #self.bias = nn.Parameter(b, requires_grad=False).to(self.device)
         self.hidden_states = self.encode_weight_hidden_states(self.weights)
@@ -201,7 +207,7 @@ class MetaNCA(nn.Module):
         total_encoding_dim = layer_encoding_dim + weight_encoding_dim
         hidden_states = []
         for layer_num, weight_mat in enumerate(weights):
-            encodings = torch.zeros(weight.shape[0], weight.shape[1], total_encoding_dim, device=self.device)
+            encodings = torch.zeros(weight_mat.shape[0], weight_mat.shape[1], total_encoding_dim, device=self.device)
             encodings[:, :, :layer_encoding_dim] = self.get_binary_encoding_vector(layer_num, layer_encoding_dim)
             k = 0
             for i in range(weight_mat.shape[0]):
@@ -211,6 +217,10 @@ class MetaNCA(nn.Module):
             hidden_states.append(encodings)
         #import ipdb; ipdb.set_trace()
         return hidden_states
+
+    def reparametrize_weights(self):
+        for i in range(len(self.weights)):
+            self.weights[i] = self.weights[i].detach().clone()
 
     def get_binary_encoding_vector(self, number, encoding_dim):
         binary = bin(number)[2:]
@@ -226,6 +236,7 @@ class MetaNCA(nn.Module):
             all_hidden_state_updates = []
             for (weight, hidden_state) in zip(self.weights, self.hidden_states):
                 weight_updates, hidden_state_updates = self.nca_local_rule(weight, hidden_state)
+
                 all_weight_updates.append(weight_updates)
                 all_hidden_state_updates.append(hidden_state_updates)
             # only update after all updates have been calculated
@@ -279,9 +290,9 @@ for epoch in range(1000):
         print(f"Val accuracy: {val_accuracy}")
     
 #net = MetaNCA(X.shape[1], y.max() + 1, device=device)
-num_layers = 1
+num_layers = 3
 #net = MetaNCA(X.shape[1], y.max() + 1, num_layers=num_layers, hidden_state_dim=5*5, prop_cells_updated=0.5, device=device)
-net = MetaNCA(X.shape[1], y.max() + 1, num_layers=num_layers, prop_cells_updated=1.0, device=device)
+net = MetaNCA(X.shape[1], y.max() + 1, num_layers=num_layers, prop_cells_updated=0.8, device=device)
 net = net.to(device)
 criterion = nn.CrossEntropyLoss()
 # Define the loss function and optimizer
@@ -296,9 +307,9 @@ optimizer = optim.Adam(net.local_nn.parameters(), lr=0.001)
 import time
 
 start = time.time()
-log_every_n_epochs = 100
-num_metaepochs = 500
-num_epochs = 5
+log_every_n_epochs = 10
+num_metaepochs = 10000
+num_epochs = 10
 
 for metaepoch in range(num_metaepochs):
 #for metaepoch in range(1000):
@@ -312,21 +323,24 @@ for metaepoch in range(num_metaepochs):
         if metaepoch % log_every_n_epochs == 0:
             #curr_weights = [w.detach() for w in net.weights]
             #visualize_weights(net.weights, metaepoch, epoch)
-            viz_start = time.time()
+            #viz_start = time.time()
             visualize_weights(net.weights, metaepoch, epoch, directory=viz_dir)
-            viz_end = time.time()
-            print('Time for visualization for current step: ' + str(viz_end - viz_start))
+            #viz_end = time.time()
+            #print('Time for visualization for current step: ' + str(viz_end - viz_start))
+        net.reparametrize_weights()
         for (X,y) in train_dataloader:
             outputs = net(X)
             _, predicted = torch.max(outputs, 1)
             correct += (predicted == y).float().sum()
             loss += criterion(outputs, y)
+    #loss.retain_grad()
     loss.backward()
     optimizer.step()
 
     #loss = criterion(outputs, train_dataset.dataset.tensors[1])
     accuracy = correct / train_size
-    wandb.log({'loss': loss.item(), 'accuracy': accuracy})
+    if not args.no_log:
+        wandb.log({'loss': loss.item(), 'accuracy': accuracy})
 
     layers = list(net.local_nn.modules())[1:]
     with torch.no_grad():
@@ -346,7 +360,8 @@ for metaepoch in range(num_metaepochs):
             correct += (predicted == y).float().sum()
         val_accuracy = correct / val_size
         print(f"Val accuracy: {val_accuracy}")
-        wandb.log({'val_accuracy': val_accuracy})
+        if not args.no_log:
+            wandb.log({'val_accuracy': val_accuracy})
         net.local_update = True
 
     if loss.item() != loss.item():
