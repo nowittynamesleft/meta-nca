@@ -14,6 +14,7 @@ from reparam_module import ReparamModule
 #import torch.multiprocessing as mp
 import threading
 import queue
+import random
 
 
 def create_weight_gif(layer_num, metaepoch, num_epochs, gif_name='weights.gif', directory='visualizations/'):
@@ -176,7 +177,7 @@ class MetaNCA(nn.Module):
             nn.Linear(local_nn_hidden_size, local_nn_hidden_size),
             nn.ReLU(),
             nn.Linear(local_nn_hidden_size, 1 + self.hidden_state_dim),
-            nn.Sigmoid()
+            nn.ReLU()
         ).to(device)
 
 
@@ -296,8 +297,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('run_name')
     parser.add_argument('--no_log', action='store_true')
+    parser.add_argument('--visualize', action='store_true')
     parser.add_argument('--num_models', type=int, default=1)
     parser.add_argument('--num_layers', type=int, default=3)
+    parser.add_argument('--num_epochs', type=int, default=10)
+    parser.add_argument('--prop_cells_updated', type=float, default=0.8)
 
     args = parser.parse_args()
 
@@ -306,7 +310,8 @@ if __name__ == '__main__':
         wandb.run.name = args.run_name
     # Load the Iris dataset
 
-    device = 'cuda:1'
+    #device = 'cuda:1'
+    device = 'cuda:0'
     #device = 'cpu' # gpu is slower...not sure why
     iris = datasets.load_iris()
     X = iris["data"]
@@ -328,8 +333,6 @@ if __name__ == '__main__':
 
     import imageio
     import os
-
-
 
     # Initialize the network
     regular_net = Net()
@@ -370,7 +373,7 @@ if __name__ == '__main__':
     num_layers = args.num_layers
     num_models = args.num_models
     #net = MetaNCA(X.shape[1], y.max() + 1, num_layers=num_layers, hidden_state_dim=5*5, prop_cells_updated=0.5, device=device)
-    net = MetaNCA(X.shape[1], y.max() + 1, num_layers=num_layers, num_models=num_models, prop_cells_updated=0.8, device=device)
+    net = MetaNCA(X.shape[1], y.max() + 1, num_layers=num_layers, num_models=num_models, prop_cells_updated=args.prop_cells_updated, device=device)
     net = net.to(device)
     criterion = nn.CrossEntropyLoss()
     # Define the loss function and optimizer
@@ -378,6 +381,7 @@ if __name__ == '__main__':
     #optimizer = optim.SGD(net.local_nn.parameters(), lr=0.001)
     #optimizer = optim.SGD(net.local_nn.parameters(), lr=0.01)
     optimizer = optim.Adam(net.local_nn.parameters(), lr=0.001)
+    #optimizer = optim.Adam(net.local_nn.parameters(), lr=0.01)
 
     # Train the network
 
@@ -386,9 +390,9 @@ if __name__ == '__main__':
 
     start = time.time()
     log_every_n_epochs = 1
+    viz_every_n_epochs = 10
     num_metaepochs = 10000
-    num_epochs = 10
-    viz = False
+    num_epochs = args.num_epochs
 
     def add_gradient_noise(model, noise_stddev=0.01):
         """Add Gaussian noise to the gradients of a PyTorch model."""
@@ -404,46 +408,54 @@ if __name__ == '__main__':
         net.zero_grad()
         optimizer.zero_grad()
         loss = 0
-        for epoch in range(num_epochs):
+        chosen_epoch = random.randint(round(0.8*num_epochs), num_epochs)
+        training = True
+        epoch = 0
+        #for epoch in range(num_epochs):
+        while training:
             # Each forward call is a "step" of the simulation
             correct = 0
-            if metaepoch % log_every_n_epochs == 0:
+            if metaepoch % viz_every_n_epochs == 0:
                 #curr_weights = [w.detach() for w in net.weights]
                 #visualize_weights(net.weights, metaepoch, epoch)
                 #viz_start = time.time()
-                if viz:
+                if args.visualize:
                     print('visualize')
                     for i, model in enumerate(net.models):
-                        visualize_weights(model.weights, metaepoch, epoch, directory=viz_dir, model_name='model_' + str(i))
+                        visualize_weights(model.weights, metaepoch, epoch, directory=viz_dir, model_name=args.run_name + 'model_' + str(i))
                     print('done visualize')
                 #viz_end = time.time()
                 #print('Time for visualization for current step: ' + str(viz_end - viz_start))
-            print('Reparametrize')
+            #print('Reparametrize')
             net.reparametrize_weights()
-            print('Done Reparametrize')
+            #print('Done Reparametrize')
             for (X,y) in train_dataloader:
-                print("NCA forward")
+                #print("NCA forward")
                 model_outputs = net(X)
-                print("Done forward")
+                #print("Done forward")
                 for outputs in model_outputs:
                     _, predicted = torch.max(outputs, 1)
                     correct += (predicted == y).float().sum()
-                    loss += criterion(outputs, y)
+                    if epoch > chosen_epoch: # only apply loss after many iterations of the rule
+                        loss += criterion(outputs, y)
+                        training = False
+            epoch += 1
         #loss.retain_grad()
-        print('Backward')
+        #print('Backward')
+        print('Stopped on epoch ' + str(epoch))
         loss.backward()
-        if loss == prev_loss:
-            print('Okay, what is going on: loss is still ' + str(loss))
-            jiggled += 1
-            if jiggled > 10:
-                print('Hmm. didnt work after ' + str(jiggled) +' times, what is going on')
-                import ipdb; ipdb.set_trace()
+        #if loss == prev_loss:
+            #print('Okay, what is going on: loss is still ' + str(loss))
+            #jiggled += 1
+            #if jiggled > 10:
+            #    print('Hmm. didnt work after ' + str(jiggled) +' times, what is going on')
+            #    import ipdb; ipdb.set_trace()
             #print('Adding gradient noise to jiggle it out.')
             #add_gradient_noise(net.local_nn, noise_stddev=0.01)
         #print(net.models[0].weights)
         #print(net.models[0].hidden_states)
 
-        print('Done backward')
+        #print('Done backward')
         #print('optimizer step')
         layers = list(net.local_nn.modules())[1:]
 
