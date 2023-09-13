@@ -15,6 +15,7 @@ from reparam_module import ReparamModule
 import threading
 import queue
 import random
+import itertools
 
 
 def create_weight_gif(layer_num, metaepoch, num_epochs, gif_name='weights.gif', directory='visualizations/'):
@@ -36,6 +37,32 @@ def visualize_weights(weights, metaepoch, epoch, directory='visualizations/', mo
         plt.savefig(f'{directory}{model_name}_W_{i}_metaepoch_{metaepoch}_epoch_{epoch}.jpg')
         plt.close()
 
+def compute_hidden_state_dims(weight_shape_list):
+    num_layers = len(weight_shape_list)
+    max_num_layer_weights = 0
+    for weight_shape in weight_shape_list:
+        curr_num_weights = weight_shape[0]*weight_shape[1]
+        if curr_num_weights > max_num_layer_weights:
+            max_num_layer_weights = curr_num_weights
+    #import ipdb; ipdb.set_trace()
+    layer_encoding_dim = int(torch.ceil(torch.log(torch.tensor(num_layers))/torch.log(torch.tensor(2))).item())
+    #layer_encoding_dim = int(np.ceil(np.log(num_layers)/np.log(2)))
+
+    weight_encoding_dim = int(torch.ceil(torch.log(torch.tensor(max_num_layer_weights))/torch.log(torch.tensor(2))).item())
+    #weight_encoding_dim = int(np.ceil(np.log(max_num_layer_weights)/np.log(2)))
+    return layer_encoding_dim, weight_encoding_dim
+
+def get_weight_shapes(in_units, out_units, num_layers, hidden_size):
+    # for now, just how many layers of hidden_size x hidden_size
+    if num_layers == 1:
+        return [(in_units, out_units)]
+    shapes = []
+    shapes.append((in_units, hidden_size))
+    for i in range(0, num_layers-2):
+        shapes.append((hidden_size, hidden_size))
+    shapes.append((hidden_size, out_units))
+    return shapes
+
 # Define the neural network
 class Net(nn.Module):
     def __init__(self):
@@ -52,7 +79,7 @@ class Net(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, in_units, out_units, num_layers, prop_cells_updated, hidden_size, device=None):
+    def __init__(self, in_units, out_units, num_layers, prop_cells_updated, hidden_size, hidden_state_layer_dim=None, hidden_state_weight_dim=None, device=None):
         super(Model, self).__init__()
         self.in_units = in_units
         self.out_units = out_units
@@ -60,6 +87,9 @@ class Model(nn.Module):
         self.prop_cells_updated = prop_cells_updated
         self.hidden_size = hidden_size
         self.device = device
+        if hidden_state_layer_dim is not None:
+            self.hidden_state_layer_dim = hidden_state_layer_dim
+            self.hidden_state_weight_dim = hidden_state_weight_dim
         self.reset_weight()
 
     def forward(self, x):
@@ -73,18 +103,12 @@ class Model(nn.Module):
 
     def encode_weight_hidden_states(self, weights):
         # binary encoding
-        num_layers = len(weights)
-        max_num_layer_weights = 0
-        for weight in weights:
-            curr_num_weights = weight.shape[0]*weight.shape[1]
-            if curr_num_weights > max_num_layer_weights:
-                max_num_layer_weights = curr_num_weights
-        #import ipdb; ipdb.set_trace()
-        #layer_encoding_dim = int(torch.ceil(torch.log(torch.tensor(num_layers))/torch.log(torch.tensor(2))).item())
-        layer_encoding_dim = int(np.ceil(np.log(num_layers)/np.log(2)))
-
-        #weight_encoding_dim = int(torch.ceil(torch.log(torch.tensor(max_num_layer_weights))/torch.log(torch.tensor(2))).item())
-        weight_encoding_dim = int(np.ceil(np.log(max_num_layer_weights)/np.log(2)))
+        if self.hidden_state_layer_dim is None:
+            weight_shape_list = [weight.shape for weight in weights]
+            layer_encoding_dim, weight_encoding_dim = compute_hidden_state_dims(weight_shape_list)
+        else:
+            layer_encoding_dim = self.hidden_state_layer_dim
+            weight_encoding_dim = self.hidden_state_weight_dim
         total_encoding_dim = layer_encoding_dim + weight_encoding_dim
         hidden_states = []
         for layer_num, weight_mat in enumerate(weights):
@@ -158,9 +182,29 @@ class MetaNCA(nn.Module):
         self.classification_nn_hidden_size = 5
 
         #self.local_nn = nn.Linear(in_units+out_units, 1)
-        self.models = [Model(in_units, out_units, num_layers, prop_cells_updated, self.classification_nn_hidden_size, device=device) for model in range(num_models)]
+        in_units_list = [in_units]
+        out_units_list = [out_units]
+        num_layers_list = [1, 2, 3, 4, 5]
+        prop_cells_updated_list = [prop_cells_updated]
+        hidden_units_list = [2, 5, 10]
+        archs = self.sample_architectures(num_models, in_units_list, out_units_list, num_layers_list, prop_cells_updated_list, hidden_units_list)
+        # archs is a list of tuples of arguments to instantiate Models
+        max_layer_state_dim = 0
+        max_weight_state_dim = 0
+        self.models = []
+        for arch in archs:
+            weight_shape_list = get_weight_shapes(arch[0], arch[1], arch[2], arch[4])
+            layer_hidden_state_dim, weight_hidden_state_dim = compute_hidden_state_dims(weight_shape_list)
+            max_layer_state_dim = max(layer_hidden_state_dim, max_layer_state_dim)
+            max_weight_state_dim = max(weight_hidden_state_dim, max_weight_state_dim)
+        for arch in archs:
+            self.models.append(Model(*arch, hidden_state_layer_dim=max_layer_state_dim, hidden_state_weight_dim=max_weight_state_dim, device=device))
+
         local_nn_hidden_size = 10
-        self.hidden_state_dim = self.models[0].hidden_states[0].shape[-1]
+        print(archs)
+        #self.hidden_state_dim = self.models[0].hidden_states[0].shape[-1]
+        hidden_state_shape_list = [model.hidden_states[0].shape[-1] for model in self.models]
+        self.hidden_state_dim = max_layer_state_dim + max_weight_state_dim
         '''
         self.local_nn = nn.Sequential(
             #nn.Linear(in_units+out_units + 1, hidden_size), # plus 1 for bias
@@ -180,8 +224,22 @@ class MetaNCA(nn.Module):
             nn.ReLU()
         ).to(device)
 
+    def sample_architectures(self, n, *args):
+        """
+        Sample n random architectures based on the provided argument values.
 
-    def nca_local_rule(self, param, hidden_states):
+        Args:
+        - n (int): Number of architectures to sample.
+        - *args: Variable length argument list of iterables representing possible values for each parameter.
+
+        Returns:
+        - list: List of tuples, where each tuple represents a sampled architecture.
+        """
+        all_architectures = list(itertools.product(*args))
+        return random.sample(all_architectures, n)
+
+
+    def nca_local_rule(self, param, hidden_states): # does not yet take into account the data. Should it? What is a good way to do that? What about using the activations of the network as it is inputting a databatch?
         #updates = torch.zeros_like(param).to(self.device)
         torch.autograd.set_detect_anomaly(True)
         updates = torch.zeros(param.shape[0], param.shape[1], 1+hidden_states.shape[2]).to(self.device)
@@ -310,8 +368,8 @@ if __name__ == '__main__':
         wandb.run.name = args.run_name
     # Load the Iris dataset
 
-    #device = 'cuda:1'
-    device = 'cuda:0'
+    device = 'cuda:1'
+    #device = 'cuda:0'
     #device = 'cpu' # gpu is slower...not sure why
     iris = datasets.load_iris()
     X = iris["data"]

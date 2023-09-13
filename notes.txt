@@ -3,6 +3,6 @@
 	- no visualization: 46 seconds with CPU (?), 84 seconds with GPU
 
 - Todo:
-	- Make it possible to have more than one layer. Very important.
-	- What can I do to understand the way these things learn? 
-	- How did David Ha "learn" gradient descent with local rules?
+	- Make it possible to have more than one layer. Very important. (done! although haven't gotten better accuracies with this yet)
+	- What can I do to understand the way these things learn? (read stuff about learning dynamics, probably should go back to the "science of dl" slack to see if there's anything there. alternatively, could ask naomi/others from kc lab for recs)
+	- How did David Ha "learn" gradient descent with local rules? find this out from paper
