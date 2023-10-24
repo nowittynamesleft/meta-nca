@@ -316,6 +316,7 @@ class MetaNCA(nn.Module):
         # only update after all updates have been calculated
         for layer, (weight, hidden_state) in enumerate(zip(model.weights, model.hidden_states)):
             weight.copy_(weight + all_weight_updates[layer])
+            #weight = weight + all_weight_updates[layer]
             hidden_state += all_hidden_state_updates[layer]
 
     def worker(self, model, X, results_queue):
@@ -482,7 +483,8 @@ if __name__ == '__main__':
         net.zero_grad()
         optimizer.zero_grad()
         loss = 0
-        chosen_epoch = random.randint(round(0.8*num_epochs), num_epochs)
+        #chosen_epoch = random.randint(round(0.8*num_epochs), num_epochs)
+        chosen_epoch = random.randint(round(0.5*num_epochs), num_epochs)
         training = True
         epoch = 0
         #for epoch in range(num_epochs):
@@ -509,7 +511,7 @@ if __name__ == '__main__':
                 #viz_end = time.time()
                 #print('Time for visualization for current step: ' + str(viz_end - viz_start))
             #print('Reparametrize')
-            net.reparametrize_weights()
+            #net.reparametrize_weights()
             #print('Done Reparametrize')
             for (X,y) in train_dataloader:
                 #print("NCA forward")
