@@ -43,8 +43,9 @@ pkgs.mkShell {
     pkgs.python3Packages.wandb
     pkgs.python3Packages.matplotlib
     pkgs.python3Packages.imageio
-    #pkgs.python3Packages.pip
-    #pkgs.python3Packages.virtualenv
+    #pkgs.python3Packages.kmapper
+    pkgs.python3Packages.pip
+    pkgs.python3Packages.virtualenv
    ];
 
   shellHook = ''

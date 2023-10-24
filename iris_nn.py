@@ -2,8 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-import torch.utils.data as data
+import torch.utils.data as torchdata
+import sklearn
 from sklearn import datasets
+from sklearn.decomposition import PCA
 import wandb
 import argparse
 import matplotlib
@@ -16,25 +18,28 @@ import threading
 import queue
 import random
 import itertools
+import kmapper
 
 
-def create_weight_gif(layer_num, metaepoch, num_epochs, gif_name='weights.gif', directory='visualizations/'):
+def create_weight_gif(layer_num, metaepoch, num_epochs, model_name='unnamed', gif_name='weights.gif', directory='visualizations/', save_prefix="no_prefix"):
     images = []
     for epoch in range(num_epochs):
         # Read each weight matrix as a jpg file
-        images.append(imageio.imread(f'{directory}W_{layer_num}_metaepoch_{metaepoch}_epoch_{epoch}.jpg'))
+        images.append(imageio.imread(f'{directory}images/{save_prefix}_{model_name}_W_{layer_num}_metaepoch_{metaepoch}_epoch_{epoch}.jpg'))
     
     # Create the gif using the weight visualizations
     #imageio.mimsave(gif_name, images, fps=5)
-    imageio.mimsave(gif_name, images, duration=2)
+    imageio.mimsave(directory + "/gifs/" + gif_name, images, duration=2)
     
 
-def visualize_weights(weights, metaepoch, epoch, directory='visualizations/', model_name='unnamed'):
+def visualize_weights(weights, metaepoch, epoch, directory='visualizations/', model_name='unnamed', save_prefix='no_prefix'):
     curr_weights = [w.cpu().detach() for w in weights]
     for i, W in enumerate(curr_weights):
+        save_string = f'{directory}images/{save_prefix}_{model_name}_W_{i}_metaepoch_{metaepoch}_epoch_{epoch}.jpg'
+        print(save_string)
         plt.imshow(W, cmap='gray')
         plt.axis('off')
-        plt.savefig(f'{directory}{model_name}_W_{i}_metaepoch_{metaepoch}_epoch_{epoch}.jpg')
+        plt.savefig(save_string)
         plt.close()
 
 def compute_hidden_state_dims(weight_shape_list):
@@ -87,7 +92,9 @@ class Model(nn.Module):
         self.prop_cells_updated = prop_cells_updated
         self.hidden_size = hidden_size
         self.device = device
-        if hidden_state_layer_dim is not None:
+        self.hidden_state_layer_dim = None # set it to none at first
+        self.hidden_state_weight_dim = None # set it to none at first
+        if hidden_state_layer_dim is not None: # if Model was not provided with this, then set them
             self.hidden_state_layer_dim = hidden_state_layer_dim
             self.hidden_state_weight_dim = hidden_state_weight_dim
         self.reset_weight()
@@ -141,16 +148,20 @@ class Model(nn.Module):
         self.hidden_states = []
         for l in range(self.num_layers):
             if self.num_layers == 1:
-                w = torch.zeros(self.in_units, self.out_units).to(self.device)
+                w = nn.init.xavier_uniform_(torch.empty(size=(self.in_units, self.out_units))).to(self.device)
+                #w = torch.zeros(self.in_units, self.out_units).to(self.device)
                 #w = torch.ones(self.in_units, self.out_units).to(self.device)
             elif l == 0:
-                w = torch.zeros(self.in_units, self.hidden_size).to(self.device)
+                w = nn.init.xavier_uniform_(torch.empty(size=(self.in_units, self.hidden_size))).to(self.device)
+                #w = torch.zeros(self.in_units, self.hidden_size).to(self.device)
                 #w = torch.ones(self.in_units, self.hidden_size).to(self.device)
             elif l == self.num_layers - 1:
-                w = torch.zeros(self.hidden_size, self.out_units).to(self.device)
+                w = nn.init.xavier_uniform_(torch.empty(size=(self.hidden_size, self.out_units))).to(self.device)
+                #w = torch.zeros(self.hidden_size, self.out_units).to(self.device)
                 #w = torch.ones(self.hidden_size, self.out_units).to(self.device)
             else:
-                w = torch.zeros(self.hidden_size, self.hidden_size).to(self.device)
+                w = nn.init.xavier_uniform_(torch.empty(size=(self.hidden_size, self.hidden_size))).to(self.device)
+                #w = torch.zeros(self.hidden_size, self.hidden_size).to(self.device)
                 #w = torch.ones(self.hidden_size, self.hidden_size).to(self.device)
             self.weights.append(nn.Parameter(w, requires_grad=False))
             #self.weights.append(nn.Parameter(w))
@@ -171,7 +182,7 @@ class Model(nn.Module):
 
 
 class MetaNCA(nn.Module):
-    def __init__(self, in_units, out_units, num_layers=1, num_models=1, prop_cells_updated=1.0, device=None):
+    def __init__(self, in_units, out_units, num_layers=1, num_models=1, classification_nn_hidden_size=5, prop_cells_updated=1.0, sample_archs=False, device=None):
         super().__init__()
         self.device = device
         self.in_units = in_units
@@ -179,32 +190,35 @@ class MetaNCA(nn.Module):
         self.num_layers = num_layers
         self.prop_cells_updated = prop_cells_updated
         self.local_update = True
-        self.classification_nn_hidden_size = 5
+        self.classification_nn_hidden_size = classification_nn_hidden_size
 
         #self.local_nn = nn.Linear(in_units+out_units, 1)
-        in_units_list = [in_units]
-        out_units_list = [out_units]
-        num_layers_list = [1, 2, 3, 4, 5]
-        prop_cells_updated_list = [prop_cells_updated]
-        hidden_units_list = [2, 5, 10]
-        archs = self.sample_architectures(num_models, in_units_list, out_units_list, num_layers_list, prop_cells_updated_list, hidden_units_list)
-        # archs is a list of tuples of arguments to instantiate Models
-        max_layer_state_dim = 0
-        max_weight_state_dim = 0
         self.models = []
-        for arch in archs:
-            weight_shape_list = get_weight_shapes(arch[0], arch[1], arch[2], arch[4])
-            layer_hidden_state_dim, weight_hidden_state_dim = compute_hidden_state_dims(weight_shape_list)
-            max_layer_state_dim = max(layer_hidden_state_dim, max_layer_state_dim)
-            max_weight_state_dim = max(weight_hidden_state_dim, max_weight_state_dim)
-        for arch in archs:
-            self.models.append(Model(*arch, hidden_state_layer_dim=max_layer_state_dim, hidden_state_weight_dim=max_weight_state_dim, device=device))
-
+        if sample_archs:
+            in_units_list = [in_units]
+            out_units_list = [out_units]
+            num_layers_list = [1, 2, 3, 4, 5]
+            prop_cells_updated_list = [prop_cells_updated]
+            hidden_units_list = [2, 5, 10]
+            archs = self.sample_architectures(num_models, in_units_list, out_units_list, num_layers_list, prop_cells_updated_list, hidden_units_list)
+            # archs is a list of tuples of arguments to instantiate Models
+            max_layer_state_dim = 0
+            max_weight_state_dim = 0
+            for arch in archs:
+                weight_shape_list = get_weight_shapes(arch[0], arch[1], arch[2], arch[4])
+                layer_hidden_state_dim, weight_hidden_state_dim = compute_hidden_state_dims(weight_shape_list)
+                max_layer_state_dim = max(layer_hidden_state_dim, max_layer_state_dim)
+                max_weight_state_dim = max(weight_hidden_state_dim, max_weight_state_dim)
+            for arch in archs:
+                self.models.append(Model(*arch, hidden_state_layer_dim=max_layer_state_dim, hidden_state_weight_dim=max_weight_state_dim, device=device))
+            print(archs)
+            self.hidden_state_dim = max_layer_state_dim + max_weight_state_dim
+        else:
+            [self.models.append(Model(self.in_units, self.out_units, self.num_layers, self.prop_cells_updated, self.classification_nn_hidden_size, device=device)) for i in range(num_models)]
+            self.hidden_state_dim = self.models[0].hidden_states[0].shape[-1]
         local_nn_hidden_size = 10
-        print(archs)
         #self.hidden_state_dim = self.models[0].hidden_states[0].shape[-1]
         hidden_state_shape_list = [model.hidden_states[0].shape[-1] for model in self.models]
-        self.hidden_state_dim = max_layer_state_dim + max_weight_state_dim
         '''
         self.local_nn = nn.Sequential(
             #nn.Linear(in_units+out_units + 1, hidden_size), # plus 1 for bias
@@ -221,7 +235,7 @@ class MetaNCA(nn.Module):
             nn.Linear(local_nn_hidden_size, local_nn_hidden_size),
             nn.ReLU(),
             nn.Linear(local_nn_hidden_size, 1 + self.hidden_state_dim),
-            nn.ReLU()
+            nn.Sigmoid()
         ).to(device)
 
     def sample_architectures(self, n, *args):
@@ -356,6 +370,7 @@ if __name__ == '__main__':
     parser.add_argument('run_name')
     parser.add_argument('--no_log', action='store_true')
     parser.add_argument('--visualize', action='store_true')
+    parser.add_argument('--sample_archs', action='store_true')
     parser.add_argument('--num_models', type=int, default=1)
     parser.add_argument('--num_layers', type=int, default=3)
     parser.add_argument('--num_epochs', type=int, default=10)
@@ -368,8 +383,8 @@ if __name__ == '__main__':
         wandb.run.name = args.run_name
     # Load the Iris dataset
 
-    device = 'cuda:1'
-    #device = 'cuda:0'
+    #device = 'cuda:1'
+    device = 'cuda:0'
     #device = 'cpu' # gpu is slower...not sure why
     iris = datasets.load_iris()
     X = iris["data"]
@@ -378,14 +393,14 @@ if __name__ == '__main__':
     # Convert to PyTorch tensors and create a dataset
     X = torch.Tensor(X).to(device)
     y = torch.Tensor(y).long().to(device)
-    dataset = data.TensorDataset(X, y)
+    dataset = torchdata.TensorDataset(X, y)
 
     # Split the dataset into training and validation sets
     train_size = int(0.8 * len(dataset))
     val_size = len(dataset) - train_size
-    train_dataset, val_dataset = data.random_split(dataset, [train_size, val_size])
-    train_dataloader = data.DataLoader(train_dataset, batch_size=len(train_dataset))
-    val_dataloader = data.DataLoader(val_dataset, batch_size=len(val_dataset))
+    train_dataset, val_dataset = torchdata.random_split(dataset, [train_size, val_size])
+    train_dataloader = torchdata.DataLoader(train_dataset, batch_size=len(train_dataset))
+    val_dataloader = torchdata.DataLoader(val_dataset, batch_size=len(val_dataset))
 
     viz_dir = 'visualizations/'
 
@@ -431,7 +446,7 @@ if __name__ == '__main__':
     num_layers = args.num_layers
     num_models = args.num_models
     #net = MetaNCA(X.shape[1], y.max() + 1, num_layers=num_layers, hidden_state_dim=5*5, prop_cells_updated=0.5, device=device)
-    net = MetaNCA(X.shape[1], y.max() + 1, num_layers=num_layers, num_models=num_models, prop_cells_updated=args.prop_cells_updated, device=device)
+    net = MetaNCA(X.shape[1], y.max() + 1, num_layers=num_layers, num_models=num_models, classification_nn_hidden_size=5, prop_cells_updated=args.prop_cells_updated, sample_archs=args.sample_archs, device=device)
     net = net.to(device)
     criterion = nn.CrossEntropyLoss()
     # Define the loss function and optimizer
@@ -446,10 +461,11 @@ if __name__ == '__main__':
     #torch.autograd.set_detect_anomaly(True)
     import time
 
+
     start = time.time()
     log_every_n_epochs = 1
-    viz_every_n_epochs = 10
-    num_metaepochs = 10000
+    viz_every_n_epochs = 1000
+    num_metaepochs = 30000
     num_epochs = args.num_epochs
 
     def add_gradient_noise(model, noise_stddev=0.01):
@@ -470,6 +486,12 @@ if __name__ == '__main__':
         training = True
         epoch = 0
         #for epoch in range(num_epochs):
+        training_weights = [] # list of list of lists: model, layer, timestep
+        for i in range(0, num_models):
+            num_layers = net.models[i].num_layers
+            training_weights.append([])
+            for l in range(0, num_layers):
+                training_weights[i].append([])
         while training:
             # Each forward call is a "step" of the simulation
             correct = 0
@@ -480,7 +502,9 @@ if __name__ == '__main__':
                 if args.visualize:
                     print('visualize')
                     for i, model in enumerate(net.models):
-                        visualize_weights(model.weights, metaepoch, epoch, directory=viz_dir, model_name=args.run_name + 'model_' + str(i))
+                        visualize_weights(model.weights, metaepoch, epoch, directory=viz_dir, model_name='model_' + str(i), save_prefix=args.run_name)
+                        for l, layer in enumerate(model.weights):
+                            training_weights[i][l].append(layer.cpu().detach().numpy())
                     print('done visualize')
                 #viz_end = time.time()
                 #print('Time for visualization for current step: ' + str(viz_end - viz_start))
@@ -498,6 +522,34 @@ if __name__ == '__main__':
                         loss += criterion(outputs, y)
                         training = False
             epoch += 1
+        # done training
+        if args.visualize:
+            if metaepoch % viz_every_n_epochs == 0:
+                for i, model in enumerate(net.models):
+                    for l, layer in enumerate(training_weights[i]):
+                        #import ipdb; ipdb.set_trace()
+                        curr_model_weight_history = np.concatenate(training_weights[i][l])
+                        # Initialize
+                        mapper = kmapper.KeplerMapper(verbose=1)
+
+                        # dimensionality reduction
+                        #pca = PCA(curr_model_weight_history.shape[1])
+                        #pca_feats = pca.fit_transform(curr_model_weight_history)
+                        # Fit to and transform the data
+                        #projected_data = mapper.fit_transform(pca_feats, projection=[0,1]) # X-Y axis
+                        projected_data = mapper.fit_transform(curr_model_weight_history, projection=[0,1]) # X-Y axis
+
+                        # Create a cover with 10 elements
+                        cover = kmapper.Cover(n_cubes=10)
+
+                        # Create dictionary called 'graph' with nodes, edges and meta-information
+                        graph = mapper.map(projected_data, curr_model_weight_history, cover=cover, clusterer=sklearn.cluster.DBSCAN(metric='l2'))
+
+                        # Visualize it
+                        mapper.visualize(graph, path_html="./visualizations/mapper_plots/" + args.run_name + "_model_" + str(i) + "_layer_" + str(l) + "_metaepoch_" + str(metaepoch) + "_weights_mapper_output.html",
+                                         title=str(net.models[i]) + '_layer_' + str(l))
+            
+
         #loss.retain_grad()
         #print('Backward')
         print('Stopped on epoch ' + str(epoch))
@@ -553,19 +605,21 @@ if __name__ == '__main__':
             exit()
     end = time.time()
 
-    for logged_metaepoch in range(int(num_metaepochs/log_every_n_epochs)):
-        metaepoch = logged_metaepoch*log_every_n_epochs
-        for layer_num in range(num_layers):
-            create_weight_gif(layer_num, metaepoch, num_epochs, gif_name='W_' + str(layer_num) + '_metaepoch_' + str(metaepoch) + '.gif')
+    if args.visualize:
+        for logged_metaepoch in range(int(num_metaepochs/viz_every_n_epochs)):
+            metaepoch = logged_metaepoch*viz_every_n_epochs
+            for i, model in enumerate(net.models):
+                for layer_num in range(model.num_layers):
+                    create_weight_gif(layer_num, metaepoch, num_epochs, model_name='model_' + str(i), gif_name=args.run_name + '_model_' + str(i) + '_W_' + str(layer_num) + '_metaepoch_' + str(metaepoch) + '.gif', save_prefix=args.run_name)
         
     with torch.no_grad():
         num_model_samples = 100
         acc_sum = 0
         val_acc_sum = 0
         for model_ind in range(num_model_samples):
-            new_hidden_dim = torch.randint(low=10, high=100, size=(1,))[0]
-            print('new hidden dim: ' + str(new_hidden_dim))
-            net.hidden_dim = new_hidden_dim
+            #new_hidden_dim = torch.randint(low=10, high=100, size=(1,))[0]
+            #print('new hidden dim: ' + str(new_hidden_dim))
+            #net.hidden_dim = new_hidden_dim
             net.reset_models()
             for epoch in range(num_epochs):
                 # Each forward call is a "step" of the simulation

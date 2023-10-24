@@ -6,3 +6,13 @@
 	- Make it possible to have more than one layer. Very important. (done! although haven't gotten better accuracies with this yet)
 	- What can I do to understand the way these things learn? (read stuff about learning dynamics, probably should go back to the "science of dl" slack to see if there's anything there. alternatively, could ask naomi/others from kc lab for recs)
 	- How did David Ha "learn" gradient descent with local rules? find this out from paper
+
+Description of model:
+This is a meta-learning algorithm that learns local rules of neural network updates through gradient descent.
+
+What do we have?
+
+A local rule neural network. This takes in input of a current weight w, hidden state h_w of that w, the sum of the forward weights w_{f}, and the sum of their hidden states h_{w_{f}}, same for backward weights w_{b} and h_{w_{b}} and outputs the update in the weight \delta_w and the update to the hidden state h_{w}. 
+
+
+
