@@ -101,12 +101,13 @@ class Model(nn.Module):
 
     def forward(self, x):
         prev_layer = x
+        intermediate_activations = []
         for i in range(self.num_layers):
             #linear = torch.matmul(prev_layer, self.weights[i]) + self.bias[i]
             linear = torch.matmul(prev_layer, self.weights[i]) # no bias for now
+            intermediate_activations.append(linear)
             prev_layer = F.relu(linear)
-        return F.softmax(prev_layer, dim=-1)
-        return x
+        return F.softmax(prev_layer, dim=-1), intermediate_activations
 
     def encode_weight_hidden_states(self, weights):
         # binary encoding
@@ -230,7 +231,7 @@ class MetaNCA(nn.Module):
         ).to(device)
         '''
         self.local_nn = nn.Sequential(
-            nn.Linear(3 + 3*self.hidden_state_dim, local_nn_hidden_size), # self, sum of forward connected weights, sum of backward connected weights, self hidden state, forward hidden state sum, backward hidden state sum
+            nn.Linear(3 + 3*self.hidden_state_dim + 2, local_nn_hidden_size), # self, sum of forward connected weights, sum of backward connected weights, self hidden state, forward hidden state sum, backward hidden state sum, plus the forward and backward activations (just 2 numbers)
             nn.ReLU(),
             nn.Linear(local_nn_hidden_size, local_nn_hidden_size),
             nn.ReLU(),
@@ -253,7 +254,7 @@ class MetaNCA(nn.Module):
         return random.sample(all_architectures, n)
 
 
-    def nca_local_rule(self, param, hidden_states): # does not yet take into account the data. Should it? What is a good way to do that? What about using the activations of the network as it is inputting a databatch?
+    def nca_local_rule(self, param, hidden_states, back_activation, forward_activation): 
         #updates = torch.zeros_like(param).to(self.device)
         torch.autograd.set_detect_anomaly(True)
         updates = torch.zeros(param.shape[0], param.shape[1], 1+hidden_states.shape[2]).to(self.device)
@@ -262,7 +263,9 @@ class MetaNCA(nn.Module):
         idx_out_units = torch.randperm(param.shape[1])[:int(param.shape[1]*self.prop_cells_updated)][:,None]
         #import ipdb; ipdb.set_trace()
         for i in idx_in_units:
+            curr_back_act = back_activation[i]
             for j in idx_out_units:
+                curr_forward_act = forward_activation[j]
                 #updates[i,j] = self.local_nn(torch.cat([param[i, :].flatten(), param[:, j].flatten(), self.bias[j]]))
                 '''
                 updates[i,j] = self.local_nn(torch.cat([param[i, :].flatten(), param[:, j].flatten()]))
@@ -287,8 +290,8 @@ class MetaNCA(nn.Module):
                     backward_states = torch.cat((hidden_states[i,:j], hidden_states[i, j+1:]), dim=1)
                 concatted_weights = torch.cat((param[i,j], torch.mean(forward)[None], torch.mean(backward)[None]))
                 concatted_states = torch.cat((hidden_states[i,j, :].flatten(), torch.mean(forward_states, dim=0).flatten(), torch.mean(backward_states, dim=1).flatten()))
-                concatted = torch.cat((concatted_weights, concatted_states))
-                #import ipdb; ipdb.set_trace()
+                concatted_acts = torch.cat((curr_back_act, curr_forward_act))
+                concatted = torch.cat((concatted_weights, concatted_states, concatted_acts))
                 updates[i,j, :] = self.local_nn(concatted)
         weight_updates = updates[:,:,0] 
         hidden_state_updates = updates[:,:,1:]
@@ -305,11 +308,17 @@ class MetaNCA(nn.Module):
             for i in range(len(model.weights)):
                 model.weights[i] = model.weights[i].detach().clone()
 
-    def update_model(self, model):
+    def update_model(self, model, activations):
         all_weight_updates = []
         all_hidden_state_updates = []
-        for (weight, hidden_state) in zip(model.weights, model.hidden_states):
-            weight_updates, hidden_state_updates = self.nca_local_rule(weight, hidden_state)
+        #import ipdb; ipdb.set_trace()
+        for i, (weight, hidden_state) in enumerate(zip(model.weights, model.hidden_states)):
+            back_activation = activations[i]
+            forward_activation = activations[i+1]
+            for s in range(len(back_activation)): # samples in batch?
+                back_act = back_activation[s]
+                forward_act = forward_activation[s]
+                weight_updates, hidden_state_updates = self.nca_local_rule(weight, hidden_state, back_act, forward_act)
 
             all_weight_updates.append(weight_updates)
             all_hidden_state_updates.append(hidden_state_updates)
@@ -326,9 +335,19 @@ class MetaNCA(nn.Module):
 
     def forward(self, X):
         # Random sample without replacement
+        #classifications, activations = zip(*[model(X) for model in self.models])
+        classifications = []
+        activations = []
+        for model in self.models:
+            classif, activation = model(X)
+            classifications.append(classif)
+            activations.append([X])
+            activation = [act.detach().clone() for act in activation]
+            activations[-1].extend(activation)
+
         if self.local_update:
-            for model in self.models:
-               self.update_model(model)
+            for i, model in enumerate(self.models):
+               self.update_model(model, activations[i])
 
             #processes = []
             #for model in self.models:
@@ -342,8 +361,7 @@ class MetaNCA(nn.Module):
             # Wait for all updates to complete
             #[torch.jit.wait(f) for f in futures_update]
 
-
-        return [model(X) for model in self.models]
+        return classifications
         #processes = []
         #results_queue = queue.Queue()
         #for model in self.models:
@@ -402,6 +420,8 @@ if __name__ == '__main__':
     train_dataset, val_dataset = torchdata.random_split(dataset, [train_size, val_size])
     train_dataloader = torchdata.DataLoader(train_dataset, batch_size=len(train_dataset))
     val_dataloader = torchdata.DataLoader(val_dataset, batch_size=len(val_dataset))
+    #train_dataloader = torchdata.DataLoader(train_dataset, batch_size=1)
+    #val_dataloader = torchdata.DataLoader(val_dataset, batch_size=1)
 
     viz_dir = 'visualizations/'
 
@@ -409,6 +429,8 @@ if __name__ == '__main__':
     import os
 
     # Initialize the network
+    # skip regular net for now
+    '''
     regular_net = Net()
     regular_net = regular_net.to(device)
     #optimizer = optim.SGD(regular_net.parameters(), lr=0.001)
@@ -442,6 +464,7 @@ if __name__ == '__main__':
                 correct += (predicted == y).float().sum()
             val_accuracy = correct / val_size
             print(f"Val accuracy: {val_accuracy}")
+    '''
     
     #net = MetaNCA(X.shape[1], y.max() + 1, device=device)
     num_layers = args.num_layers
@@ -476,7 +499,7 @@ if __name__ == '__main__':
                 param.grad += torch.randn_like(param) * noise_stddev
 
     prev_loss = -1
-    jiggled = 0
+    #jiggled = 0
     for metaepoch in range(num_metaepochs):
     #for metaepoch in range(1000):
         net.reset_models()
@@ -512,6 +535,7 @@ if __name__ == '__main__':
                 #print('Time for visualization for current step: ' + str(viz_end - viz_start))
             #print('Reparametrize')
             #net.reparametrize_weights()
+            net = ReparamModule(net)
             #print('Done Reparametrize')
             for (X,y) in train_dataloader:
                 #print("NCA forward")
