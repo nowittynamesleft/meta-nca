@@ -3,6 +3,9 @@
 	- no visualization: 46 seconds with CPU (?), 84 seconds with GPU
 
 - Todo:
-	- Make it possible to have more than one layer. Very important.
+	- Make it possible to have more than one layer. Very important. 
+		- We can do this now, but performance is still not great for greater than two layers. Two layers is harder to get working.
+		- Another thing to try: "go back" to previous local_nn weights when not improving after x amount of iterations. always keep a best local_nn model checkpoint to go back to.
 	- What can I do to understand the way these things learn? 
 	- How did David Ha "learn" gradient descent with local rules?
+		- Read learning to learn gradient descent by gradient descent paper
