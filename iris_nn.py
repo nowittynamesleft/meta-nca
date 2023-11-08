@@ -511,7 +511,8 @@ if __name__ == '__main__':
                 #viz_end = time.time()
                 #print('Time for visualization for current step: ' + str(viz_end - viz_start))
             #print('Reparametrize')
-            #net.reparametrize_weights()
+            net.reparametrize_weights()
+            #reparam_net = ReparamModule(net)
             #print('Done Reparametrize')
             for (X,y) in train_dataloader:
                 #print("NCA forward")
@@ -569,7 +570,7 @@ if __name__ == '__main__':
 
         #print('Done backward')
         #print('optimizer step')
-        layers = list(net.local_nn.modules())[1:]
+        #layers = list(net.local_nn.modules())[1:]
 
         #with torch.no_grad():
         #    for layer in layers:
