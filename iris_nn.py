@@ -595,11 +595,17 @@ if __name__ == '__main__':
             correct = 0
             for (X, y) in val_dataloader:
                 model_test_outputs = net(X)
+                max_acc = 0
                 for test_outputs in model_test_outputs:
                     _, predicted = torch.max(test_outputs, 1)
-                    correct += (predicted == y).float().sum()
+                    curr_correct = (predicted == y).float().sum()
+                    correct += curr_correct
+                    curr_acc = (curr_correct/val_size)
+                    if  curr_acc > max_acc:
+                        max_acc = curr_acc
             val_accuracy = correct / (val_size * len(model_test_outputs))
             print(f"Val accuracy: {val_accuracy}")
+            print(f"Max accuracy of models: {max_acc}")
             if not args.no_log:
                 wandb.log({'val_accuracy': val_accuracy})
             net.local_update = True
