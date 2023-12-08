@@ -19,6 +19,7 @@ import queue
 import random
 import itertools
 import kmapper
+import time
 
 
 def create_weight_gif(layer_num, metaepoch, num_epochs, model_name='unnamed', gif_name='weights.gif', directory='visualizations/', save_prefix="no_prefix"):
@@ -257,11 +258,15 @@ class MetaNCA(nn.Module):
     def nca_local_rule(self, param, hidden_states, back_activation, forward_activation): 
         #updates = torch.zeros_like(param).to(self.device)
         torch.autograd.set_detect_anomaly(True)
-        updates = torch.zeros(param.shape[0], param.shape[1], 1+hidden_states.shape[2]).to(self.device)
+        #updates = torch.zeros(param.shape[0], param.shape[1], 1+hidden_states.shape[2]).to(self.device)
         #updates = torch.ones(param.shape[0], param.shape[1], 1+hidden_states.shape[2]).to(self.device)
         idx_in_units = torch.randperm(param.shape[0])[:int(param.shape[0]*self.prop_cells_updated)][:,None]
         idx_out_units = torch.randperm(param.shape[1])[:int(param.shape[1]*self.prop_cells_updated)][:,None]
+        total_num_updates = param.shape[0]*param.shape[1]
+        all_inputs = torch.zeros(total_num_updates, 3 + 3*self.hidden_state_dim + 2).to(self.device)
         #import ipdb; ipdb.set_trace()
+        start = time.time()
+        k = 0
         for i in idx_in_units:
             curr_back_act = back_activation[i]
             for j in idx_out_units:
@@ -292,7 +297,20 @@ class MetaNCA(nn.Module):
                 concatted_states = torch.cat((hidden_states[i,j, :].flatten(), torch.mean(forward_states, dim=0).flatten(), torch.mean(backward_states, dim=1).flatten()))
                 concatted_acts = torch.cat((curr_back_act, curr_forward_act))
                 concatted = torch.cat((concatted_weights, concatted_states, concatted_acts))
-                updates[i,j, :] = self.local_nn(concatted)
+                all_inputs[k, :] = concatted
+
+        end = time.time()
+        print("Inputs calculated: " + str(end - start))
+        start = time.time()
+        #updates[i,j, :] = self.local_nn(concatted)
+        updates = self.local_nn(all_inputs) # calculate all updates at once
+        end = time.time()
+        print("Updates calculated: " + str(end - start))
+        # reshape 
+        start = time.time()
+        updates = updates.reshape(param.shape[0], param.shape[1], 1+hidden_states.shape[2])
+        end = time.time()
+        print("Reshaped: " + str(end - start))
         weight_updates = updates[:,:,0] 
         hidden_state_updates = updates[:,:,1:]
         return weight_updates, hidden_state_updates
@@ -483,7 +501,6 @@ if __name__ == '__main__':
     # Train the network
 
     #torch.autograd.set_detect_anomaly(True)
-    import time
 
 
     start = time.time()
@@ -535,7 +552,7 @@ if __name__ == '__main__':
                 #print('Time for visualization for current step: ' + str(viz_end - viz_start))
             #print('Reparametrize')
             #net.reparametrize_weights()
-            net = ReparamModule(net)
+            #net = ReparamModule(net)
             #print('Done Reparametrize')
             for (X,y) in train_dataloader:
                 #print("NCA forward")

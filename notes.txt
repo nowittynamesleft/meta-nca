@@ -15,4 +15,4 @@ What do we have?
 A local rule neural network. This takes in input of a current weight w, hidden state h_w of that w, the sum of the forward weights w_{f}, and the sum of their hidden states h_{w_{f}}, same for backward weights w_{b} and h_{w_{b}} and outputs the update in the weight \delta_w and the update to the hidden state h_{w}. 
 
 
-
+Need to parallelize the local_rule_nn. Activations make everything much slower
