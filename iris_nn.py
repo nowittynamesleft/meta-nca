@@ -305,7 +305,6 @@ class MetaNCA(nn.Module):
         return concatted
 
     def nca_local_rule(self, param, hidden_states, back_activation, forward_activation): 
-        #updates = torch.zeros_like(param).to(self.device)
         torch.autograd.set_detect_anomaly(True)
         update_index_tuples = self.get_random_matrix_inds(param)
         all_inputs = torch.zeros(len(update_index_tuples), 3 + 3*self.hidden_state_dim + 2).to(self.device)
