@@ -302,14 +302,15 @@ class MetaNCA(nn.Module):
     def nca_local_rule(self, param, hidden_states): 
         torch.autograd.set_detect_anomaly(True)
         update_index_tuples = self.get_random_matrix_inds(param)
-        all_inputs = torch.zeros(len(update_index_tuples), 3 + 3*self.hidden_state_dim).to(self.device)
+        all_perceptions = torch.zeros(len(update_index_tuples), 3 + 3*self.hidden_state_dim).to(self.device)
         # in order to get forward weights and forward_states, i want to mask
         for k, (i,j) in enumerate(update_index_tuples):
-            all_inputs[k, :] = self.get_neighboring_signals(param, hidden_states, i, j)
+            all_perceptions[k, :] = self.get_neighboring_signals(param, hidden_states, i, j)
 
-        batchwise_updates = self.local_nn(all_inputs) # calculate all updates at once
+        batchwise_updates = self.local_nn(all_perceptions) # calculate all updates at once
         reshaped_updates = torch.zeros(param.shape[0], param.shape[1], 1 +
             self.hidden_state_dim).to(self.device)
+
         for k, (i,j) in enumerate(update_index_tuples):
             reshaped_updates[i, j, :] = batchwise_updates[k, :]
 
