@@ -16,3 +16,12 @@ A local rule neural network. This takes in input of a current weight w, hidden s
 
 
 
+Need to:
+- Need to parallelize the local_rule_nn. Activations make everything much slower.
+    - Parallelized the local_nn call but haven't yet parallelized the indexing and concatenation. Need to
+    do that so things are faster; the for loop is the more time-consuming part.
+- simplify nca_local_rule code but make sure it can run on stuff without the activation part
+- then trace a gradient through one entire training loop
+
+
+
