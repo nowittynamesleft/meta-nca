@@ -1,0 +1,25 @@
+- Training seems unstable; sometimes 500 meta-epochs gets to 96% val accuracy and sometimes it stays at 33% the whole time
+- CPU training is faster (500 metaepochs with visualizations: 91 seconds with GPU, 44 seconds with CPU)
+	- no visualization: 46 seconds with CPU (?), 84 seconds with GPU
+
+- Todo:
+	- Make it possible to have more than one layer. Very important. (done! although haven't gotten better accuracies with this yet)
+	- What can I do to understand the way these things learn? (read stuff about learning dynamics, probably should go back to the "science of dl" slack to see if there's anything there. alternatively, could ask naomi/others from kc lab for recs)
+	- How did David Ha "learn" gradient descent with local rules? find this out from paper
+
+Description of model:
+This is a meta-learning algorithm that learns local rules of neural network updates through gradient descent.
+
+What do we have?
+
+A local rule neural network. This takes in input of a current weight w, hidden state h_w of that w, the sum of the forward weights w_{f}, and the sum of their hidden states h_{w_{f}}, same for backward weights w_{b} and h_{w_{b}} and outputs the update in the weight \delta_w and the update to the hidden state h_{w}. 
+
+
+
+Need to:
+- Need to parallelize the local_rule_nn. Activations make everything much slower.
+    - Parallelized the local_nn call but haven't yet parallelized the indexing and concatenation. Need to
+    do that so things are faster; the for loop is the more time-consuming part.
+- simplify nca_local_rule code but make sure it can run on stuff without the activation part
+- then trace a gradient through one entire training loop
+

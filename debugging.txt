@@ -1,0 +1,74 @@
+So comparing from "old_nca_rule" and "new_nca_rule":
+    - The update_index_tuples is changed, before it was sampling random neurons to get hidden states
+      from, rather than weights to get hidden states from, and then indexing with all pairs. It
+      really should be sample random tuples of indices, which are sampling the actual weights.
+    - There are some changes to the dimension of averaging states and selecting states. I have a
+      feeling that this is the change that messes up the gradient calculation and gives me the
+      tensor version error:
+
+    def get_backward_states(self, param, hidden_states, i, j):
+        if j == 0:
+            backward = param[i, j+1:].flatten()
+            backward_states = hidden_states[i,j+1:,:]
+        elif j == param.shape[1]:
+            backward = param[i, :j].flatten()
+            backward_states = hidden_states[i,:j,:]
+        else:
+            backward = torch.cat((param[i,:j].flatten(), param[i, j+1:].flatten()))
+            backward_states = torch.cat((hidden_states[i,:j], hidden_states[i, j+1:]), dim=1)
+            #concatenate backward states to average later
+            #backward_states = torch.cat((hidden_states[i,:j], hidden_states[i, j+1:]), dim=0) THIS
+            # WAS HOW IT WAS WHEN I DID THE NEW LOCAL RULE
+        return backward, backward_states
+    vs. 
+                if i == 0:
+                    forward = param[i+1:, j].flatten()
+                    forward_states = hidden_states[i+1:,j,:]
+                elif i == param.shape[0]:
+                    forward = param[:i, j].flatten()
+                    forward_states = hidden_states[:i,j,:]
+                else:
+                    forward = torch.cat((param[:i,j].flatten(), param[i+1:, j].flatten()))
+                    forward_states = torch.cat((hidden_states[:i,j], hidden_states[i+1:, j]))
+                if j == 0:
+                    backward = param[i, j+1:].flatten()
+                    backward_states = hidden_states[i,j+1:,:]
+                elif j == param.shape[1]:
+                    backward = param[i, :j].flatten()
+                    backward_states = hidden_states[i,:j,:]
+                else:
+                    backward = torch.cat((param[i,:j].flatten(), param[i, j+1:].flatten()))
+                    backward_states = torch.cat((hidden_states[i,:j], hidden_states[i, j+1:]), dim=1)
+
+I changed this also in get_neighboring_signals as well which probably needs to be there in order to
+work with the above change:
+        #concatted_states = torch.cat((hidden_states[i,j, :].flatten(), torch.mean(forward_states,
+        #    dim=0).flatten(), torch.mean(backward_states, dim=0).flatten()))
+        # ^ HOW IT WAS BEFORE DEBUGGIN TO SEE DIFFERENCE BETWEEN OLD AND NEW
+        concatted_states = torch.cat((hidden_states[i,j, :].flatten(), torch.mean(forward_states,
+            dim=0).flatten(), torch.mean(backward_states, dim=1).flatten()))
+
+Next steps should be to investigate what exactly is going on with the shapes, and which is the
+correct way of actually calculating the mean of the forward and backward states, and which is the
+correct way of getting the updated_index_tuples of weights: the old_nca_rule or the new_nca_rule?
+
+The immediate thing to do is to try to get the updated_index_tuples solution to work with the code
+changed as it is to work with the dimensions.
+
+Okay, so actually making the indices tensors of dimension 1 instead of ints fixes the problem. But
+still I don't know why. Such a weird thing. That is what the difference between update_index_tuples
+vs. the old way: the old way created these index tensors containing the ints instead of raw ints.
+This kept dimensions of the tensors that they indexed (i.e., forward_states and backward_states)
+instead of making them two dimensional, they kept them 3 dimensional with one dimension shape 1.
+Like instead of [2,7], it was [2, 1, 7] for forward states and [1, 2, 7] for backward states.
+
+
+Differences between old and new way of nca_local_rule:
+- old: ( for i in idx_in_units: for j in idx_out_units: ) -> this means that each of the neurons are
+  sampled for forward and back, and all possible pairs of indices are chosen between them for
+  updating the model.
+- new: (for (i,j) in update_index_tuples:) -> update_index_tuples has randomly sampled elements of a
+  matrix and then just calculates the row and column values for those values based on the division
+  or modulo.
+- concatenate hidden states on a different dim because of indexing
+- calculating average of hidden states on a different dim because concatenation is different

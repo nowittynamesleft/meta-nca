@@ -72,9 +72,12 @@ def get_weight_shapes(in_units, out_units, num_layers, hidden_size):
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
-        self.fc1 = nn.Linear(4, 8)
-        self.fc2 = nn.Linear(8, 16)
-        self.fc3 = nn.Linear(16, 3)
+        #self.fc1 = nn.Linear(4, 8)
+        #self.fc2 = nn.Linear(8, 16)
+        #self.fc3 = nn.Linear(16, 3)
+        self.fc1 = nn.Linear(4, 5)
+        self.fc2 = nn.Linear(5, 5)
+        self.fc3 = nn.Linear(5, 3)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
@@ -82,6 +85,12 @@ class Net(nn.Module):
         x = F.softmax(self.fc3(x), dim=-1)
         return x
 
+
+def extract_weights(net):
+    weights = []
+    for layer in [net.fc1, net.fc2, net.fc3]:
+        weights.append(layer.weight.detach().T)
+    return weights
 
 class Model(nn.Module):
     def __init__(self, in_units, out_units, num_layers, prop_cells_updated, hidden_size, hidden_state_layer_dim=None, hidden_state_weight_dim=None, device=None):
@@ -120,14 +129,14 @@ class Model(nn.Module):
         hidden_states = []
         for layer_num, weight_mat in enumerate(weights):
             encodings = torch.zeros(weight_mat.shape[0], weight_mat.shape[1], total_encoding_dim, device=self.device)
-            #encodings = torch.ones(weight_mat.shape[0], weight_mat.shape[1], total_encoding_dim, device=self.device)
             encodings[:, :, :layer_encoding_dim] = self.get_binary_encoding_vector(layer_num, layer_encoding_dim)
             k = 0
             for i in range(weight_mat.shape[0]):
                 for j in range(weight_mat.shape[1]):
                     encodings[i, j, layer_encoding_dim:] = self.get_binary_encoding_vector(k, weight_encoding_dim)
                     k += 1
-            hidden_states.append(encodings)
+            #hidden_states.append(encodings)
+            hidden_states.append(torch.zeros_like(encodings)) # no hidden states
         #import ipdb; ipdb.set_trace()
         return hidden_states
 
@@ -181,7 +190,7 @@ class Model(nn.Module):
         self.hidden_states = self.encode_weight_hidden_states(self.weights)
 
 
-class MetaNCA(nn.Module):
+class weight_NCA(nn.Module):
     def __init__(self, in_units, out_units, num_layers=1, num_models=1, classification_nn_hidden_size=5, prop_cells_updated=1.0, sample_archs=False, device=None):
         super().__init__()
         self.device = device
@@ -191,44 +200,11 @@ class MetaNCA(nn.Module):
         self.prop_cells_updated = prop_cells_updated
         self.local_update = True
         self.classification_nn_hidden_size = classification_nn_hidden_size
-
-        #self.local_nn = nn.Linear(in_units+out_units, 1)
         self.models = []
-        if sample_archs:
-            in_units_list = [in_units]
-            out_units_list = [out_units]
-            num_layers_list = [1, 2, 3, 4, 5]
-            prop_cells_updated_list = [prop_cells_updated]
-            hidden_units_list = [2, 5, 10]
-            archs = self.sample_architectures(num_models, in_units_list, out_units_list, num_layers_list, prop_cells_updated_list, hidden_units_list)
-            # archs is a list of tuples of arguments to instantiate Models
-            max_layer_state_dim = 0
-            max_weight_state_dim = 0
-            for arch in archs:
-                weight_shape_list = get_weight_shapes(arch[0], arch[1], arch[2], arch[4])
-                layer_hidden_state_dim, weight_hidden_state_dim = compute_hidden_state_dims(weight_shape_list)
-                max_layer_state_dim = max(layer_hidden_state_dim, max_layer_state_dim)
-                max_weight_state_dim = max(weight_hidden_state_dim, max_weight_state_dim)
-            for arch in archs:
-                self.models.append(Model(*arch, hidden_state_layer_dim=max_layer_state_dim, hidden_state_weight_dim=max_weight_state_dim, device=device))
-            print(archs)
-            self.hidden_state_dim = max_layer_state_dim + max_weight_state_dim
-        else:
-            [self.models.append(Model(self.in_units, self.out_units, self.num_layers, self.prop_cells_updated, self.classification_nn_hidden_size, device=device)) for i in range(num_models)]
-            self.hidden_state_dim = self.models[0].hidden_states[0].shape[-1]
+        [self.models.append(Model(self.in_units, self.out_units, self.num_layers, self.prop_cells_updated, self.classification_nn_hidden_size, device=device)) for i in range(num_models)]
+        self.hidden_state_dim = self.models[0].hidden_states[0].shape[-1]
         local_nn_hidden_size = 10
-        #self.hidden_state_dim = self.models[0].hidden_states[0].shape[-1]
         hidden_state_shape_list = [model.hidden_states[0].shape[-1] for model in self.models]
-        '''
-        self.local_nn = nn.Sequential(
-            #nn.Linear(in_units+out_units + 1, hidden_size), # plus 1 for bias
-            nn.Linear(in_units+out_units, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, 1)
-        ).to(device)
-        '''
         self.local_nn = nn.Sequential(
             nn.Linear(3 + 3*self.hidden_state_dim, local_nn_hidden_size), # self, sum of forward connected weights, sum of backward connected weights, self hidden state, forward hidden state sum, backward hidden state sum
             nn.ReLU(),
@@ -237,20 +213,6 @@ class MetaNCA(nn.Module):
             nn.Linear(local_nn_hidden_size, 1 + self.hidden_state_dim),
             nn.Sigmoid()
         ).to(device)
-
-    def sample_architectures(self, n, *args):
-        """
-        Sample n random architectures based on the provided argument values.
-
-        Args:
-        - n (int): Number of architectures to sample.
-        - *args: Variable length argument list of iterables representing possible values for each parameter.
-
-        Returns:
-        - list: List of tuples, where each tuple represents a sampled architecture.
-        """
-        all_architectures = list(itertools.product(*args))
-        return random.sample(all_architectures, n)
 
     def get_random_matrix_inds(self, param):
         num_update_elements = int(param.nelement()*self.prop_cells_updated)
@@ -283,27 +245,19 @@ class MetaNCA(nn.Module):
             backward_states = hidden_states[i,:j,:]
         else:
             backward = torch.cat((param[i,:j].flatten(), param[i, j+1:].flatten()))
-            backward_states = torch.cat((hidden_states[i,:j], hidden_states[i, j+1:]), dim=1)
+            #backward_states = torch.cat((hidden_states[i,:j], hidden_states[i, j+1:]), dim=1)
             #concatenate backward states to average later
-            #backward_states = torch.cat((hidden_states[i,:j], hidden_states[i, j+1:]), dim=0) 
-            # ^ THIS WAS HOW IT WAS WHEN I DID THE NEW LOCAL RULE
+            backward_states = torch.cat((hidden_states[i,:j], hidden_states[i, j+1:]), dim=0)
         return backward, backward_states
 
     def get_neighboring_signals(self, param, hidden_states, i, j):
         forward, forward_states = self.get_forward_states(param, hidden_states, i, j)
         backward, backward_states = self.get_backward_states(param, hidden_states, i, j)
-        # TODO: figure out what's wrong with the dimensions of the forward and backward states
 
-        #concatted_weights = torch.cat((param[i,j][None], torch.mean(forward)[None], torch.mean(backward)[None]))
-        concatted_weights = torch.cat((param[i,j], torch.mean(forward)[None], torch.mean(backward)[None]))
-        assert forward_states.shape[2] == self.hidden_state_dim
-        assert backward_states.shape[2] == self.hidden_state_dim
-        #import ipdb; ipdb.set_trace()
-        #concatted_states = torch.cat((hidden_states[i,j, :].flatten(), torch.mean(forward_states,
-        #    dim=0).flatten(), torch.mean(backward_states, dim=0).flatten()))
-        # ^ HOW IT WAS BEFORE DEBUGGIN TO SEE DIFFERENCE BETWEEN OLD AND NEW
+        concatted_weights = torch.cat((param[i,j][None], torch.mean(forward)[None], torch.mean(backward)[None]))
         concatted_states = torch.cat((hidden_states[i,j, :].flatten(), torch.mean(forward_states,
-            dim=0).flatten(), torch.mean(backward_states, dim=1).flatten()))
+            dim=0).flatten(), torch.mean(backward_states, dim=0).flatten()))
+        concatted_states = torch.zeros_like(concatted_states)
 
         concatted = torch.cat((concatted_weights, concatted_states))
         return concatted
@@ -314,20 +268,16 @@ class MetaNCA(nn.Module):
         all_perceptions = torch.zeros(len(update_index_tuples), 3 + 3*self.hidden_state_dim).to(self.device)
         # in order to get forward weights and forward_states, i want to mask
         for k, (i,j) in enumerate(update_index_tuples):
-            i_ten = torch.tensor(i)[None]
-            j_ten = torch.tensor(j)[None]
-            all_perceptions[k, :] = self.get_neighboring_signals(param, hidden_states, i_ten, j_ten)
+            all_perceptions[k, :] = self.get_neighboring_signals(param, hidden_states, i, j)
 
         batchwise_updates = self.local_nn(all_perceptions) # calculate all updates at once
         reshaped_updates = torch.zeros(param.shape[0], param.shape[1], 1 +
             self.hidden_state_dim).to(self.device)
 
         for k, (i,j) in enumerate(update_index_tuples):
-            i_ten = torch.tensor(i)[None]
-            j_ten = torch.tensor(j)[None]
-            reshaped_updates[i_ten, j_ten, :] = batchwise_updates[k, :]
+            reshaped_updates[i, j, :] = batchwise_updates[k, :]
 
-        weight_updates = reshaped_updates[:,:,0] 
+        weight_updates = reshaped_updates[:,:,0]
         hidden_state_updates = reshaped_updates[:,:,1:]
         return weight_updates, hidden_state_updates
 
@@ -339,50 +289,6 @@ class MetaNCA(nn.Module):
         for model in self.models:
             for i in range(len(model.weights)):
                 model.weights[i] = model.weights[i].detach().clone()
-
-    def old_nca_local_rule(self, param, hidden_states): 
-        torch.autograd.set_detect_anomaly(True)
-        updates = torch.zeros(param.shape[0], param.shape[1], 1+hidden_states.shape[2]).to(self.device)
-        '''
-        idx_in_units = torch.randperm(param.shape[0])[:int(param.shape[0]*self.prop_cells_updated)][:,None]
-        idx_out_units = torch.randperm(param.shape[1])[:int(param.shape[1]*self.prop_cells_updated)][:,None]
-        for i in idx_in_units:
-            for j in idx_out_units:
-                if i == 0:
-                    forward = param[i+1:, j].flatten()
-                    forward_states = hidden_states[i+1:,j,:]
-                elif i == param.shape[0]:
-                    forward = param[:i, j].flatten()
-                    forward_states = hidden_states[:i,j,:]
-                else:
-                    forward = torch.cat((param[:i,j].flatten(), param[i+1:, j].flatten()))
-                    forward_states = torch.cat((hidden_states[:i,j], hidden_states[i+1:, j]))
-                if j == 0:
-                    backward = param[i, j+1:].flatten()
-                    backward_states = hidden_states[i,j+1:,:]
-                elif j == param.shape[1]:
-                    backward = param[i, :j].flatten()
-                    backward_states = hidden_states[i,:j,:]
-                else:
-                    backward = torch.cat((param[i,:j].flatten(), param[i, j+1:].flatten()))
-                    backward_states = torch.cat((hidden_states[i,:j], hidden_states[i, j+1:]), dim=1)
-                concatted_weights = torch.cat((param[i,j], torch.mean(forward)[None], torch.mean(backward)[None]))
-                concatted_states = torch.cat((hidden_states[i,j, :].flatten(), torch.mean(forward_states, dim=0).flatten(), torch.mean(backward_states, dim=1).flatten()))
-                concatted = torch.cat((concatted_weights, concatted_states))
-                updates[i,j, :] = self.local_nn(concatted)
-        '''
-        update_index_tuples = self.get_random_matrix_inds(param)
-        for (i, j) in update_index_tuples:
-            i_ten = torch.tensor(i)[None]
-            j_ten = torch.tensor(j)[None]
-            print(param.shape)
-            print(hidden_states.shape)
-            concatted = self.get_neighboring_signals(param, hidden_states, i_ten, j_ten)
-            updates[i_ten,j_ten, :] = self.local_nn(concatted)
-        weight_updates = updates[:,:,0] 
-        hidden_state_updates = updates[:,:,1:]
-        return weight_updates, hidden_state_updates
-    
 
     def update_model(self, model):
         all_weight_updates = []
@@ -522,18 +428,19 @@ if __name__ == '__main__':
             val_accuracy = correct / val_size
             print(f"Val accuracy: {val_accuracy}")
     
-    #net = MetaNCA(X.shape[1], y.max() + 1, device=device)
+    target_weights = extract_weights(regular_net)
     num_layers = args.num_layers
     num_models = args.num_models
-    #net = MetaNCA(X.shape[1], y.max() + 1, num_layers=num_layers, hidden_state_dim=5*5, prop_cells_updated=0.5, device=device)
-    net = MetaNCA(X.shape[1], y.max() + 1, num_layers=num_layers, num_models=num_models, classification_nn_hidden_size=5, prop_cells_updated=args.prop_cells_updated, sample_archs=args.sample_archs, device=device)
+    net = weight_NCA(X.shape[1], y.max() + 1, num_layers=num_layers, num_models=num_models, classification_nn_hidden_size=5, prop_cells_updated=args.prop_cells_updated, sample_archs=args.sample_archs, device=device)
     net = net.to(device)
-    criterion = nn.CrossEntropyLoss()
+    #criterion = nn.CrossEntropyLoss()
+    criterion = nn.MSELoss()
     # Define the loss function and optimizer
     #optimizer = optim.SGD(net.local_nn.parameters(), lr=0.01, momentum=0.9)
     #optimizer = optim.SGD(net.local_nn.parameters(), lr=0.001)
     #optimizer = optim.SGD(net.local_nn.parameters(), lr=0.01)
-    optimizer = optim.Adam(net.local_nn.parameters(), lr=0.001)
+    #optimizer = optim.Adam(net.local_nn.parameters(), lr=0.001)
+    optimizer = optim.Adam(net.local_nn.parameters(), lr=0.0001)
     #optimizer = optim.Adam(net.local_nn.parameters(), lr=0.01)
 
     # Train the network
@@ -557,13 +464,12 @@ if __name__ == '__main__':
     prev_loss = -1
     jiggled = 0
     for metaepoch in range(num_metaepochs):
-    #for metaepoch in range(1000):
         net.reset_models()
         net.zero_grad()
         optimizer.zero_grad()
         loss = 0
-        #chosen_epoch = random.randint(round(0.8*num_epochs), num_epochs)
-        chosen_epoch = random.randint(round(0.5*num_epochs), num_epochs)
+        chosen_epoch = random.randint(round(0.8*num_epochs), num_epochs)
+        #chosen_epoch = random.randint(round(0.5*num_epochs), num_epochs)
         training = True
         epoch = 0
         #for epoch in range(num_epochs):
@@ -597,12 +503,20 @@ if __name__ == '__main__':
                 #print("NCA forward")
                 model_outputs = net(X)
                 #print("Done forward")
+                weights = [model.weights for model in net.models]
+                if epoch > chosen_epoch: # only apply loss after many iterations of the rule
+                    for model_weights in weights:
+                        for i, layer_weights in enumerate(model_weights):
+                            loss += criterion(layer_weights, target_weights[i])
+                    training = False
+                '''
                 for outputs in model_outputs:
                     _, predicted = torch.max(outputs, 1)
                     correct += (predicted == y).float().sum()
                     if epoch > chosen_epoch: # only apply loss after many iterations of the rule
                         loss += criterion(outputs, y)
                         training = False
+                '''
 
             epoch += 1
         # done training
@@ -629,8 +543,7 @@ if __name__ == '__main__':
                         graph = mapper.map(projected_data, curr_model_weight_history, cover=cover, clusterer=sklearn.cluster.DBSCAN(metric='l2'))
 
                         # Visualize it
-                        mapper.visualize(graph, path_html="./visualizations/mapper_plots/" + args.run_name + "_model_" + str(i) + "_layer_" + str(l) + "_metaepoch_" + str(metaepoch) + "_weights_mapper_output.html",
-                                         title=str(net.models[i]) + '_layer_' + str(l))
+                        mapper.visualize(graph, path_html="./visualizations/mapper_plots/" + args.run_name + "_model_" + str(i) + "_layer_" + str(l) + "_metaepoch_" + str(metaepoch) + "_weights_mapper_output.html", title=str(net.models[i]) + '_layer_' + str(l))
             
 
         #loss.retain_grad()
