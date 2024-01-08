@@ -454,7 +454,10 @@ if __name__ == '__main__':
     parser.add_argument('--num_models', type=int, default=1)
     parser.add_argument('--num_layers', type=int, default=3)
     parser.add_argument('--num_epochs', type=int, default=10)
+    parser.add_argument('--metaepochs', type=int, default=30000)
+    parser.add_argument('--load_model', type=str, default=None)
     parser.add_argument('--prop_cells_updated', type=float, default=0.8)
+
 
     args = parser.parse_args()
 
@@ -527,6 +530,9 @@ if __name__ == '__main__':
     num_models = args.num_models
     #net = MetaNCA(X.shape[1], y.max() + 1, num_layers=num_layers, hidden_state_dim=5*5, prop_cells_updated=0.5, device=device)
     net = MetaNCA(X.shape[1], y.max() + 1, num_layers=num_layers, num_models=num_models, classification_nn_hidden_size=5, prop_cells_updated=args.prop_cells_updated, sample_archs=args.sample_archs, device=device)
+    if args.load_model is not None:
+        print('Loading model: ' + args.load_model)
+        net = torch.load(args.load_model)
     net = net.to(device)
     criterion = nn.CrossEntropyLoss()
     # Define the loss function and optimizer
@@ -543,9 +549,9 @@ if __name__ == '__main__':
 
 
     start = time.time()
-    log_every_n_epochs = 1
+    log_every_n_metaepochs = 1
     viz_every_n_epochs = 1000
-    num_metaepochs = 30000
+    num_metaepochs = args.metaepochs
     num_epochs = args.num_epochs
 
     def add_gradient_noise(model, noise_stddev=0.01):
@@ -593,16 +599,17 @@ if __name__ == '__main__':
             #reparam_net = ReparamModule(net)
             net.reparametrize_weights()
             #print('Done Reparametrize')
+            model_correct_counts = torch.zeros(num_models)
             for (X,y) in train_dataloader:
                 #print("NCA forward")
                 model_outputs = net(X)
                 #print("Done forward")
-                for outputs in model_outputs:
-                    _, predicted = torch.max(outputs, 1)
-                    correct += (predicted == y).float().sum()
-                    if epoch > chosen_epoch: # only apply loss after many iterations of the rule
+                if epoch > chosen_epoch: # only apply loss after many iterations of the rule
+                    for i, outputs in enumerate(model_outputs):
                         loss += criterion(outputs, y)
                         training = False
+                        _, predicted = torch.max(outputs, 1)
+                        model_correct_counts[i] += (predicted == y).float().sum().cpu()
 
             epoch += 1
         # done training
@@ -663,31 +670,41 @@ if __name__ == '__main__':
         #print('Done optimizer step')
 
         #loss = criterion(outputs, train_dataset.dataset.tensors[1])
-        accuracy = correct / (train_size*len(model_outputs))
+        model_train_accs = model_correct_counts / train_size
+        average_train_acc = torch.mean(model_train_accs)
+        max_train_acc = torch.max(model_train_accs)
         if not args.no_log:
-            wandb.log({'loss': loss.item(), 'accuracy': accuracy})
+            wandb.log({'loss': loss.item(), 
+                'average_train_acc': average_train_acc,
+                'max_train_acc': max_train_acc})
 
         #print(layers[0].weight.grad)
-        if metaepoch % log_every_n_epochs == 0:
+        model_correct_counts = torch.zeros(num_models)
+        if metaepoch % log_every_n_metaepochs == 0:
             print(f"MetaEpoch {metaepoch}: Loss {loss.item()}")
-            print(f"Accuracy: {accuracy}")
+            print(f"Average train accuracy: {average_train_acc}")
+            print(f"Max train accuracy: {max_train_acc}")
             net.local_update = False
-            correct = 0
+            #correct = 0
+            total_val_loss = 0
             for (X, y) in val_dataloader:
                 model_test_outputs = net(X)
-                max_acc = 0
-                for test_outputs in model_test_outputs:
+                for i, test_outputs in enumerate(model_test_outputs):
+                    total_val_loss += criterion(test_outputs, y)
                     _, predicted = torch.max(test_outputs, 1)
-                    curr_correct = (predicted == y).float().sum()
-                    correct += curr_correct
-                    curr_acc = (curr_correct/val_size)
-                    if  curr_acc > max_acc:
-                        max_acc = curr_acc
-            val_accuracy = correct / (val_size * len(model_test_outputs))
-            print(f"Val accuracy: {val_accuracy}")
-            print(f"Max accuracy of models: {max_acc}")
+                    curr_correct = (predicted == y).float().sum().cpu()
+                    model_correct_counts[i] += curr_correct
+
+            model_val_accuracies = model_correct_counts / val_size
+            average_val_acc = torch.mean(model_val_accuracies)
+            max_val_acc = torch.max(model_val_accuracies)
+            print(f"Average val accuracy: {average_val_acc}")
+            print(f"Max accuracy of models: {max_val_acc}")
+            print(f"Total Val Loss: {total_val_loss}")
             if not args.no_log:
-                wandb.log({'val_accuracy': val_accuracy})
+                wandb.log({'average_val_acc': average_val_acc, 
+                    'max_val_acc': max_val_acc,
+                    'total_val_loss': total_val_loss})
             net.local_update = True
 
         if loss.item() != loss.item():
@@ -734,6 +751,9 @@ if __name__ == '__main__':
             print(f"Val accuracy: {val_accuracy}")
             net.local_update = True
 
+    model_path = 'local_rule_models/' + args.run_name + '_model.pth'
+    print('Saving model to ' + model_path)
+    torch.save(net, model_path)
 
     print('Avg train accuracy: ' + str(acc_sum/num_model_samples))
     print('Avg Val accuracy: ' + str(val_acc_sum/num_model_samples))
