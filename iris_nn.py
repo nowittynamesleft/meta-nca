@@ -409,38 +409,7 @@ class MetaNCA(nn.Module):
             for model in self.models:
                self.update_model(model)
 
-            #processes = []
-            #for model in self.models:
-            #    p = threading.Thread(target=self.update_model, args=(model,))
-            #    p.start()
-            #    processes.append(p)
-            #for p in processes:
-            #    p.join()
-
-            #futures_update = [torch.jit.fork(self.update_model, model) for model in self.models]
-            # Wait for all updates to complete
-            #[torch.jit.wait(f) for f in futures_update]
-
-
         return [model(X) for model in self.models]
-        #processes = []
-        #results_queue = queue.Queue()
-        #for model in self.models:
-        #    p = threading.Thread(target=self.worker, args=(model, X, results_queue))
-        #    p.start()
-        #    processes.append(p)
-        #
-        #results = [results_queue.get() for _ in self.models]
-
-        #for p in processes:
-        #    p.join()
-
-        ## Now, the 'results' list contains the outputs from all models
-        #return results
-
-        #futures = [torch.jit.fork(model, X) for model in self.models]
-        ## Use torch.jit.wait to collect the results
-        #return [torch.jit.wait(f) for f in futures]
 
 
 if __name__ == '__main__':
@@ -466,8 +435,8 @@ if __name__ == '__main__':
         wandb.run.name = args.run_name
     # Load the Iris dataset
 
-    #device = 'cuda:1'
-    device = 'cuda:0'
+    device = 'cuda:1'
+    #device = 'cuda:0'
     #device = 'cpu' # gpu is slower...not sure why
     iris = datasets.load_iris()
     X = iris["data"]
@@ -600,13 +569,15 @@ if __name__ == '__main__':
             net.reparametrize_weights()
             #print('Done Reparametrize')
             model_correct_counts = torch.zeros(num_models)
+            model_losses = torch.zeros(num_models, dtype=float, device=device)
             for (X,y) in train_dataloader:
                 #print("NCA forward")
                 model_outputs = net(X)
                 #print("Done forward")
                 if epoch > chosen_epoch: # only apply loss after many iterations of the rule
                     for i, outputs in enumerate(model_outputs):
-                        loss += criterion(outputs, y)
+                        #loss += criterion(outputs, y)
+                        model_losses[i] += criterion(outputs, y)
                         training = False
                         _, predicted = torch.max(outputs, 1)
                         model_correct_counts[i] += (predicted == y).float().sum().cpu()
@@ -642,7 +613,19 @@ if __name__ == '__main__':
 
         #loss.retain_grad()
         #print('Backward')
+        #loss = criterion(outputs, train_dataset.dataset.tensors[1])
+        loss = torch.sum(model_losses)
+        #loss = torch.max(model_losses)
+        #loss = torch.min(model_losses)
+        model_train_accs = model_correct_counts / train_size
+        average_train_acc = torch.mean(model_train_accs)
+        max_train_acc = torch.max(model_train_accs)
+        if not args.no_log:
+            wandb.log({'loss': loss.item(), 
+                'average_train_acc': average_train_acc,
+                'max_train_acc': max_train_acc})
         print('Stopped on epoch ' + str(epoch))
+
         loss.backward()
         #if loss == prev_loss:
             #print('Okay, what is going on: loss is still ' + str(loss))
@@ -669,14 +652,6 @@ if __name__ == '__main__':
         prev_loss = loss
         #print('Done optimizer step')
 
-        #loss = criterion(outputs, train_dataset.dataset.tensors[1])
-        model_train_accs = model_correct_counts / train_size
-        average_train_acc = torch.mean(model_train_accs)
-        max_train_acc = torch.max(model_train_accs)
-        if not args.no_log:
-            wandb.log({'loss': loss.item(), 
-                'average_train_acc': average_train_acc,
-                'max_train_acc': max_train_acc})
 
         #print(layers[0].weight.grad)
         model_correct_counts = torch.zeros(num_models)

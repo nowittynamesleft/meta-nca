@@ -24,4 +24,15 @@ Need to:
 - then trace a gradient through one entire training loop
 
 
+So now that nca_local_rule code is a bit more simplified (with separate functions), we can begin to
+try to include activations. Need to look at that branch that has the code that includes activations.
 
+IDEAS:
+- include activations
+
+Does any of the following matter when we don't include activations yet?
+- think about taking some (good?) task nns from the previous meta-epoch and continue training them (so that
+  we can train good ones further without loss of performance)
+    - What about training with only the best ones for the loss?
+    - What about training to optimize for difference in loss between epochs, so we get a
+      local_rule_nn that reduces loss most times you apply it?
