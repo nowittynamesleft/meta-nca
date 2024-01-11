@@ -100,13 +100,16 @@ class Model(nn.Module):
         self.reset_weight()
 
     def forward(self, x):
+        #import ipdb; ipdb.set_trace()
         prev_layer = x
+        intermediate_activations = []
         for i in range(self.num_layers):
             #linear = torch.matmul(prev_layer, self.weights[i]) + self.bias[i]
             linear = torch.matmul(prev_layer, self.weights[i]) # no bias for now
+            intermediate_activations.append(linear)
             prev_layer = F.relu(linear)
-        return F.softmax(prev_layer, dim=-1)
-        return x
+        return F.softmax(prev_layer, dim=-1), intermediate_activations
+
 
     def encode_weight_hidden_states(self, weights):
         # binary encoding
@@ -230,7 +233,9 @@ class MetaNCA(nn.Module):
         ).to(device)
         '''
         self.local_nn = nn.Sequential(
-            nn.Linear(3 + 3*self.hidden_state_dim, local_nn_hidden_size), # self, sum of forward connected weights, sum of backward connected weights, self hidden state, forward hidden state sum, backward hidden state sum
+            nn.Linear(3 + 3*self.hidden_state_dim + 2, local_nn_hidden_size), # self, sum of forward
+            # connected weights, sum of backward connected weights, self hidden state, forward hidden
+            # state sum, backward hidden state sum, and forward and backward activations
             nn.ReLU(),
             nn.Linear(local_nn_hidden_size, local_nn_hidden_size),
             nn.ReLU(),
@@ -289,7 +294,9 @@ class MetaNCA(nn.Module):
             # ^ THIS WAS HOW IT WAS WHEN I DID THE NEW LOCAL RULE
         return backward, backward_states
 
-    def get_neighboring_signals(self, param, hidden_states, i, j):
+    def get_neighboring_signals(self, param, hidden_states, back_activation, forward_activation, i, j):
+        curr_back_act = back_activation[i]
+        curr_forward_act = forward_activation[j]
         forward, forward_states = self.get_forward_states(param, hidden_states, i, j)
         backward, backward_states = self.get_backward_states(param, hidden_states, i, j)
         # TODO: figure out what's wrong with the dimensions of the forward and backward states
@@ -305,18 +312,24 @@ class MetaNCA(nn.Module):
         concatted_states = torch.cat((hidden_states[i,j, :].flatten(), torch.mean(forward_states,
             dim=0).flatten(), torch.mean(backward_states, dim=1).flatten()))
 
-        concatted = torch.cat((concatted_weights, concatted_states))
+        concatted_acts = torch.cat((curr_back_act, curr_forward_act))
+
+        concatted = torch.cat((concatted_weights, concatted_states, concatted_acts))
         return concatted
 
-    def nca_local_rule(self, param, hidden_states): 
+    def nca_local_rule(self, param, hidden_states, back_activation, forward_activation): 
         torch.autograd.set_detect_anomaly(True)
         update_index_tuples = self.get_random_matrix_inds(param)
-        all_perceptions = torch.zeros(len(update_index_tuples), 3 + 3*self.hidden_state_dim).to(self.device)
+        all_perceptions = torch.zeros(len(update_index_tuples), 3 + 3*self.hidden_state_dim +
+        2).to(self.device) # number of weights to update(len(updated_index_tuples); weight (1),
+                            # and hidden_states (hidden_state_dim) of forward, current,
+                            # and back (*3) with forward and backward activations (2).
         # in order to get forward weights and forward_states, i want to mask
         for k, (i,j) in enumerate(update_index_tuples):
             i_ten = torch.tensor(i)[None]
             j_ten = torch.tensor(j)[None]
-            all_perceptions[k, :] = self.get_neighboring_signals(param, hidden_states, i_ten, j_ten)
+            all_perceptions[k, :] = self.get_neighboring_signals(param, hidden_states,
+                back_activation, forward_activation, i_ten, j_ten)
 
         batchwise_updates = self.local_nn(all_perceptions) # calculate all updates at once
         reshaped_updates = torch.zeros(param.shape[0], param.shape[1], 1 +
@@ -384,14 +397,21 @@ class MetaNCA(nn.Module):
         return weight_updates, hidden_state_updates
     
 
-    def update_model(self, model):
+    def update_model(self, model, activations):
         all_weight_updates = []
         all_hidden_state_updates = []
-        for (weight, hidden_state) in zip(model.weights, model.hidden_states):
-            weight_updates, hidden_state_updates = self.nca_local_rule(weight, hidden_state)
+        #import ipdb; ipdb.set_trace()
+        for i, (weight, hidden_state) in enumerate(zip(model.weights, model.hidden_states)):
+            back_activation = activations[i]
+            forward_activation = activations[i+1]
+            for s in range(len(back_activation)):
+                back_act = back_activation[s]
+                forward_act = forward_activation[s]
+                weight_updates, hidden_state_updates = self.nca_local_rule(weight, hidden_state,
+                    back_act, forward_act)
 
-            all_weight_updates.append(weight_updates)
-            all_hidden_state_updates.append(hidden_state_updates)
+                all_weight_updates.append(weight_updates)
+                all_hidden_state_updates.append(hidden_state_updates)
         # only update after all updates have been calculated
         for layer, (weight, hidden_state) in enumerate(zip(model.weights, model.hidden_states)):
             weight.copy_(weight + all_weight_updates[layer])
@@ -404,16 +424,30 @@ class MetaNCA(nn.Module):
         results_queue.put(output)
 
     def forward(self, X):
-        # Random sample without replacement
-        if self.local_update:
-            for model in self.models:
-               self.update_model(model)
+        activations = []
+        for model in self.models:
+            classif, activation = model(X)
+            activations.append([X])
+            activation = [act.detach().clone() for act in activation]
+            activations[-1].extend(activation)
 
-        return [model(X) for model in self.models]
+        if self.local_update:
+            for i, model in enumerate(self.models):
+               self.update_model(model, activations[i])
+
+        classifications = [model(X)[0] for model in self.models] # redo the classifications based on
+        # the changes given by the local update rule
+        return classifications
+        #return [model(X) for model in self.models]
 
 
 if __name__ == '__main__':
     #mp.set_start_method('spawn')
+    random.seed(973)
+    np.random.seed(973)
+    torch.manual_seed(973)
+    torch.cuda.manual_seed(973)
+    torch.cuda.manual_seed_all(973)
 
     parser = argparse.ArgumentParser()
     parser.add_argument('run_name')
@@ -435,8 +469,8 @@ if __name__ == '__main__':
         wandb.run.name = args.run_name
     # Load the Iris dataset
 
-    device = 'cuda:1'
-    #device = 'cuda:0'
+    #device = 'cuda:1'
+    device = 'cuda:0'
     #device = 'cpu' # gpu is slower...not sure why
     iris = datasets.load_iris()
     X = iris["data"]
@@ -614,6 +648,7 @@ if __name__ == '__main__':
         #loss.retain_grad()
         #print('Backward')
         #loss = criterion(outputs, train_dataset.dataset.tensors[1])
+        #import ipdb; ipdb.set_trace()
         loss = torch.sum(model_losses)
         #loss = torch.max(model_losses)
         #loss = torch.min(model_losses)
