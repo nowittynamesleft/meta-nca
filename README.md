@@ -29,15 +29,14 @@ allowing for updates to the model to have weight-level parallelism.
 - Given that the updates are local, the neural networks could have
 the ability to be robust to changes in their connections, enabling new modules of the
 network to be added on the fly.
-- 
 
-This is a work in progress.
-
-Inspired by works such as https://distill.pub/2020/growing-ca/ . Analogous components and their differences:
+Inspired by works such as https://distill.pub/2020/growing-ca/ . Analogous components and differences:
 - Emoji -> task neural network, where pixels are weights and hidden states of pixels are hidden states of the weights.
   - However, in this project we don't explicitly have "dead" and "alive" weights, unlike in the growing NCA work.
   - We also have the local rule network take activations of neighboring neurons, to give a dependence on input data.
-- 
+- Timesteps: in the case of activation included, timesteps are the individual forward calls of the task neural network. Without activation, the concept is the same as in the emoji case.
+
+This is a work in progress. Currently, any task network beyond 2 layers is hard to optimize.
 
 ### Local Rule Network Inputs
 In order for the local rule network to be able to output updates for any weight in any layer in the task neural network,
@@ -52,8 +51,6 @@ this is concatenated with the current weight <em>w</em> and its hidden state <em
 ### Including Activations
 We also extend the perception vector to include activations of neurons for updating the network using individual data samples.
 This gives the local rule network an actual dependence on the input data beyond optimizing the loss during training. 
-
-This is a work in progress.
 
 ### Local Rule Network Outputs: 
 The output of the local rule network
