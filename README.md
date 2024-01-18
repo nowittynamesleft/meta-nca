@@ -10,7 +10,7 @@ for updating the weights of the task neural network. This local rule network is 
 
 ![](https://github.com/nowittynamesleft/meta-nca/blob/multiarchitecture/visualizations/combined_single_layer_all_metaepochs_no_activation.gif)
 
-<em>Evolution of the weights of a single layer network to train on the Iris dataset, over many "meta-epochs" of 10 epochs each. In each epoch, the local rule network is applied, updating the weights of the task network. The task network is reinitialized to zero after computing cross-entropy loss from the 10th epoch. The local rule network (not shown) is then updated via gradient descent from this loss of the task network, which constitutes the "meta-epoch". </em>
+<em>Evolution of the weights of a single layer network to train on the Iris dataset, over many "meta-epochs" of 10 epochs each. In each epoch, the local rule network is applied, updating the weights of the task network. The task network is reinitialized to zero after computing cross-entropy loss from the 10th epoch. The local rule network (not shown) is then updated via gradient descent from this loss of the task network. The local rule network is updated once per "meta-epoch". </em>
 
 <b>This is a work in progress. Currently, any task network beyond 2 layers is hard to optimize.</b>
 
