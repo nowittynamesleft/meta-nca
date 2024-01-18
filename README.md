@@ -12,7 +12,7 @@ for updating the weights of the task neural network. This local rule network is 
 
 <em>Evolution of the weights of a single layer network to train on the Iris dataset, over many "meta-epochs" of 10 epochs each. In each epoch, the local rule network is applied, updating the weights of the task network. The task network is reinitialized to zero after computing cross-entropy loss from the 10th epoch. The local rule network (not shown) is then updated via gradient descent from this loss of the task network. The local rule network is updated once per "meta-epoch". </em>
 
-<b>This is a work in progress. Currently, any task network beyond 2 layers is hard to optimize.</b>
+<b>This is a work in progress, and a lot will likely change. Currently, any task network beyond 2 layers is hard to optimize.</b>
 
 In order to train a local rule network for 1000 meta-epochs to evolve a single task network, with one layer, over 10 epochs:
 
