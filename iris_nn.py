@@ -11,7 +11,6 @@ import argparse
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-from reparam_module import ReparamModule
 #import torch.jit
 #import torch.multiprocessing as mp
 import threading
@@ -601,7 +600,6 @@ if __name__ == '__main__':
                 #viz_end = time.time()
                 #print('Time for visualization for current step: ' + str(viz_end - viz_start))
             #print('Reparametrize')
-            #reparam_net = ReparamModule(net)
             net.reparametrize_weights()
             #print('Done Reparametrize')
             model_correct_counts = torch.zeros(num_models)
