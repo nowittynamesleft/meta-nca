@@ -15,14 +15,15 @@ for updating the weights of the task neural network. This local rule network is 
 <b>This is a work in progress. Currently, any task network beyond 2 layers is hard to optimize.</b>
 
 In order to train a local rule network for 1000 meta-epochs to evolve a single task network, with one layer, over 10 epochs:
-python iris_nn.py curr_test --num_models 1 --num_layers 1 --num_epochs 10 --prop_cells_updated 0.8 --metaepochs 1000 --no_log
 
-num_models: how many models to instantiate and evolve for a single metaepoch to calculate loss. Similar to number of samples in pool in Growing Neural Cellular Automata.
-num_layers: how many layers per model. Can also do --sample_archs to sample multiple architectures at time.
-num_epochs: number of epochs to evolve each model for before calculating loss over iris dataset.
-prop_cells_updated: the proportion of task network weights to be sampled to update per epoch.
-metaepochs: number of model evolutions per model total
-no_log: do not log to weights and biases. Remove if you want to log losses and accuracies.
+```python iris_nn.py curr_test --num_models 1 --num_layers 1 --num_epochs 10 --prop_cells_updated 0.8 --metaepochs 1000 --no_log```
+
+- num_models: how many models to instantiate and evolve for a single metaepoch to calculate loss.
+- num_layers: how many layers per model. Can also do --sample_archs to sample multiple architectures at time.
+- num_epochs: number of epochs to evolve each model for before calculating loss over iris dataset.
+- prop_cells_updated: the proportion of task network weights to be sampled to update per epoch.
+- metaepochs: number of model evolutions per model total
+- no_log: do not log to weights and biases. Remove if you want to log losses and accuracies.
 
 ### Motivation
 Neural networks are useful models for many tasks. However, they
@@ -76,8 +77,8 @@ The loss function of the task neural
 network is computed using a cross-entropy classification loss, and we use this
 to update the weights of the local rule neural network by backpropagating
 the gradient through the task neural network through to the local rule neural
-network. We only update the weights of the local rule network in this way.
-The only updates to the task network are given by the local rule network.
+network. We only update the weights of the local rule network in this way;
+the task network is updated by the local rule network outputs.
 
 ### Application of local rule
 The application of the local rule neural network is stochastic so that updates are not guarenteed to happen globally
