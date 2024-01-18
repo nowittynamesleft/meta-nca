@@ -404,14 +404,16 @@ class MetaNCA(nn.Module):
         for i, (weight, hidden_state) in enumerate(zip(model.weights, model.hidden_states)):
             back_activation = activations[i]
             forward_activation = activations[i+1]
+            all_weight_updates.append(torch.zeros_like(model.weights[i]))
+            all_hidden_state_updates.append(torch.zeros_like(model.hidden_states[i]))
             for s in range(len(back_activation)):
                 back_act = back_activation[s]
                 forward_act = forward_activation[s]
                 weight_updates, hidden_state_updates = self.nca_local_rule(weight, hidden_state,
                     back_act, forward_act)
 
-                all_weight_updates.append(weight_updates)
-                all_hidden_state_updates.append(hidden_state_updates)
+                all_weight_updates[i] += weight_updates
+                all_hidden_state_updates[i] += hidden_state_updates
         # only update after all updates have been calculated
         for layer, (weight, hidden_state) in enumerate(zip(model.weights, model.hidden_states)):
             weight.copy_(weight + all_weight_updates[layer])
@@ -611,7 +613,6 @@ if __name__ == '__main__':
                 if epoch > chosen_epoch: # only apply loss after many iterations of the rule
                     for i, outputs in enumerate(model_outputs):
                         #loss += criterion(outputs, y)
-                        model_losses[i] += criterion(outputs, y)
                         training = False
                         _, predicted = torch.max(outputs, 1)
                         model_correct_counts[i] += (predicted == y).float().sum().cpu()
