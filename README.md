@@ -12,6 +12,8 @@ for updating the weights of the task neural network. This local rule network is 
 
 <em>Evolution of the weights of a single layer network to train on the Iris dataset, over many "meta-epochs" of 10 epochs each. In each epoch, the local rule network is applied, updating the weights of the task network. The task network is reinitialized to zero after computing cross-entropy loss from the 10th epoch. The local rule network (not shown) is then updated via gradient descent from this loss of the task network. </em>
 
+<b>This is a work in progress. Currently, any task network beyond 2 layers is hard to optimize.</b>
+
 ### Motivation
 Neural networks are useful models for many tasks. However, they
 are expensive to train on large amounts of data, and once they are
@@ -37,8 +39,6 @@ Inspired by works such as https://distill.pub/2020/growing-ca/ . Analogous compo
   - However, in this project we don't explicitly have "dead" and "alive" weights, unlike in the growing NCA work.
   - We also have the local rule network take activations of neighboring neurons, to give a dependence on input data.
 - Timesteps: in the case of activation included, timesteps are the individual forward calls of the task neural network. Without activation, the concept is the same as in the emoji case.
-
-This is a work in progress. Currently, any task network beyond 2 layers is hard to optimize.
 
 ### Local Rule Network Inputs
 In order for the local rule network to be able to output updates for any weight in any layer in the task neural network,
