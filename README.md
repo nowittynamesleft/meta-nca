@@ -1,16 +1,16 @@
 # meta-nca
 A neural cellular automata (NCA) model to evolve neural networks using local rules.
 
-![](https://github.com/nowittynamesleft/meta-nca/blob/multiarchitecture/visualizations/combined_single_layer_all_metaepochs_no_activation.gif)
-
-<em>Evolution of the weights of a single layer network to train on the Iris dataset. No activations are used.</em>
-
 We have the following setup:
 We have a feed-forward neural network to be trained for the simple classification task on the iris dataset.
 We denote this network as the “task neural network”. Each weight of the
 task neural network has a hidden state vector associated with it. We have a
 second neural network, termed the ”local rule network”, that is responsible
 for updating the weights of the task neural network. This local rule network is trained using the loss of the task neural network.
+
+![](https://github.com/nowittynamesleft/meta-nca/blob/multiarchitecture/visualizations/combined_single_layer_all_metaepochs_no_activation.gif)
+
+<em>Evolution of the weights of a single layer network to train on the Iris dataset, over many "meta-epochs" of 10 epochs each. In each epoch, the local rule network is applied, updating the weights of the task network. The task network is reinitialized to zero after computing cross-entropy loss from the 10th epoch. The local rule network (not shown) is then updated via gradient descent from this loss of the task network. </em>
 
 ### Motivation
 Neural networks are useful models for many tasks. However, they
@@ -52,7 +52,7 @@ this is concatenated with the current weight <em>w</em> and its hidden state <em
 
 ### Including Activations
 We also extend the perception vector to include activations of neurons for updating the network using individual data samples.
-This gives the local rule network an actual dependence on the input data beyond optimizing the loss during training. 
+This is necessary to give the local rule network an actual dependence on the input data beyond optimizing the loss during training. 
 
 ### Local Rule Network Outputs: 
 The output of the local rule network
