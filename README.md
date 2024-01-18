@@ -2,6 +2,7 @@
 A neural cellular automata (NCA) model to evolve neural networks using local rules.
 
 ![](https://github.com/nowittynamesleft/meta-nca/blob/multiarchitecture/visualizations/combined_single_layer_all_metaepochs_no_activation.gif)
+
 <em>Evolution of the weights of a single layer network to train on the Iris dataset. No activations are used.</em>
 
 We have the following setup:
