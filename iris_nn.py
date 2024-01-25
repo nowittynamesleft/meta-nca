@@ -165,8 +165,8 @@ class Model(nn.Module):
                 w = nn.init.xavier_uniform_(torch.empty(size=(self.hidden_size, self.hidden_size))).to(self.device)
                 #w = torch.zeros(self.hidden_size, self.hidden_size).to(self.device)
                 #w = torch.ones(self.hidden_size, self.hidden_size).to(self.device)
-            self.weights.append(nn.Parameter(w, requires_grad=False))
-            #self.weights.append(nn.Parameter(w))
+            #self.weights.append(nn.Parameter(w, requires_grad=False))
+            self.weights.append(nn.Parameter(w))
         '''
             if self.hidden_state_dim is not None:
                 hidden_state = torch.zeros(w.shape[0], w.shape[1], self.hidden_state_dim)
@@ -486,8 +486,12 @@ if __name__ == '__main__':
     train_size = int(0.8 * len(dataset))
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = torchdata.random_split(dataset, [train_size, val_size])
-    train_dataloader = torchdata.DataLoader(train_dataset, batch_size=len(train_dataset))
-    val_dataloader = torchdata.DataLoader(val_dataset, batch_size=len(val_dataset))
+
+    #train_dataloader = torchdata.DataLoader(train_dataset, batch_size=len(train_dataset))
+    #val_dataloader = torchdata.DataLoader(val_dataset, batch_size=len(val_dataset))
+    batch_size = 1
+    train_dataloader = torchdata.DataLoader(train_dataset, batch_size=batch_size)
+    val_dataloader = torchdata.DataLoader(val_dataset, batch_size=batch_size)
 
     viz_dir = 'visualizations/'
 
@@ -604,7 +608,10 @@ if __name__ == '__main__':
             #print('Done Reparametrize')
             model_correct_counts = torch.zeros(num_models)
             model_losses = torch.zeros(num_models, dtype=float, device=device)
+            batch_num = 0
             for (X,y) in train_dataloader:
+                #print('Batch' + str(batch_num))
+                #batch_num += 1
                 #print("NCA forward")
                 model_outputs = net(X)
                 #print("Done forward")
@@ -614,6 +621,7 @@ if __name__ == '__main__':
                         training = False
                         _, predicted = torch.max(outputs, 1)
                         model_correct_counts[i] += (predicted == y).float().sum().cpu()
+                        model_losses[i] += criterion(outputs, y)
 
             epoch += 1
         # done training
